@@ -7,7 +7,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   sync-main:
@@ -29,12 +28,18 @@ jobs:
           git remote add upstream https://github.com/openclaw/openclaw.git || true
           git fetch upstream main
 
-      - name: Sync main with upstream
+      - name: Sync main with upstream (exclude .github/workflows)
         run: |
           git checkout main
-          git merge --ff-only upstream/main
+          git checkout upstream/main -- .
+          git restore --source=HEAD --staged --worktree .github/workflows || true
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "No non-workflow changes to sync"
+            exit 0
+          fi
+          git add -A
+          git commit -m "Sync upstream main (excluding workflow files)"
           git push origin main
 
       - name: Summary
-        run: |
-          echo "Synced origin/main to upstream/main"
+        run: echo "Synced non-workflow changes from upstream/main"
