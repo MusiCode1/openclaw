@@ -1,8 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { clearRuntimeAuthProfileStoreSnapshots } from "../../agents/auth-profiles/store.js";
 import { applyAuthChoiceLoadedPluginProvider } from "../../commands/auth-choice.apply.plugin-provider.js";
-import { resolvePreferredProviderForAuthChoice } from "../../commands/auth-choice.preferred-provider.js";
-import type { AuthChoice } from "../../commands/onboard-types.js";
 import {
   createAuthTestLifecycle,
   createExitThrowingRuntime,
@@ -12,7 +10,9 @@ import {
   setupAuthTestEnv,
 } from "../../commands/test-wizard-helpers.js";
 import { createCapturedPluginRegistration } from "../../test-utils/plugin-registration.js";
+import { buildProviderPluginMethodChoice } from "../provider-wizard.js";
 import type { OpenClawPluginApi, ProviderPlugin } from "../types.js";
+import { requireProviderContractProvider, uniqueProviderContractProviders } from "./registry.js";
 
 type ResolvePluginProviders =
   typeof import("../../commands/auth-choice.apply.plugin-provider.runtime.js").resolvePluginProviders;
@@ -28,6 +28,7 @@ const resolveProviderPluginChoiceMock = vi.hoisted(() => vi.fn<ResolveProviderPl
 const runProviderModelSelectedHookMock = vi.hoisted(() =>
   vi.fn<RunProviderModelSelectedHook>(async () => {}),
 );
+const resolvePreferredProviderPluginProvidersMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../../extensions/qwen-portal-auth/oauth.js", () => ({
   loginQwenPortalOAuth: loginQwenPortalOAuthMock,
@@ -42,6 +43,18 @@ vi.mock("../../commands/auth-choice.apply.plugin-provider.runtime.js", () => ({
   resolveProviderPluginChoice: resolveProviderPluginChoiceMock,
   runProviderModelSelectedHook: runProviderModelSelectedHookMock,
 }));
+
+vi.mock("../../plugins/providers.js", async () => {
+  const actual = await vi.importActual<object>("../../plugins/providers.js");
+  return {
+    ...actual,
+    resolvePluginProviders: (...args: unknown[]) =>
+      resolvePreferredProviderPluginProvidersMock(...args),
+  };
+});
+
+const { resolvePreferredProviderForAuthChoice } =
+  await import("../../commands/auth-choice.preferred-provider.js");
 
 type StoredAuthProfile = {
   type?: string;
@@ -87,6 +100,11 @@ describe("provider auth-choice contract", () => {
     lifecycle.setStateDir(env.stateDir);
   }
 
+  beforeEach(() => {
+    resolvePreferredProviderPluginProvidersMock.mockReset();
+    resolvePreferredProviderPluginProvidersMock.mockReturnValue(uniqueProviderContractProviders);
+  });
+
   afterEach(async () => {
     loginQwenPortalOAuthMock.mockReset();
     githubCopilotLoginCommandMock.mockReset();
@@ -100,21 +118,34 @@ describe("provider auth-choice contract", () => {
     activeStateDir = null;
   });
 
-  it("maps plugin-backed auth choices through the shared preferred-provider resolver", async () => {
-    const scenarios = [
-      { authChoice: "github-copilot" as const, expectedProvider: "github-copilot" },
-      { authChoice: "qwen-portal" as const, expectedProvider: "qwen-portal" },
-      { authChoice: "minimax-global-oauth" as const, expectedProvider: "minimax-portal" },
-      { authChoice: "modelstudio-api-key" as const, expectedProvider: "modelstudio" },
-      { authChoice: "ollama" as const, expectedProvider: "ollama" },
-      { authChoice: "unknown" as AuthChoice, expectedProvider: undefined },
-    ] as const;
+  it("maps provider-plugin choices through the shared preferred-provider fallback resolver", async () => {
+    const pluginFallbackScenarios = [
+      "github-copilot",
+      "qwen-portal",
+      "minimax-portal",
+      "modelstudio",
+      "ollama",
+    ].map((providerId) => {
+      const provider = requireProviderContractProvider(providerId);
+      return {
+        authChoice: buildProviderPluginMethodChoice(provider.id, provider.auth[0]?.id ?? "default"),
+        expectedProvider: provider.id,
+      };
+    });
 
-    for (const scenario of scenarios) {
+    for (const scenario of pluginFallbackScenarios) {
+      resolvePreferredProviderPluginProvidersMock.mockClear();
       await expect(
-        resolvePreferredProviderForAuthChoice({ choice: scenario.authChoice }),
+        resolvePreferredProviderForAuthChoice({ choice: scenario.authChoice as AuthChoice }),
       ).resolves.toBe(scenario.expectedProvider);
+      expect(resolvePreferredProviderPluginProvidersMock).toHaveBeenCalled();
     }
+
+    resolvePreferredProviderPluginProvidersMock.mockClear();
+    await expect(
+      resolvePreferredProviderForAuthChoice({ choice: "unknown" as AuthChoice }),
+    ).resolves.toBe(undefined);
+    expect(resolvePreferredProviderPluginProvidersMock).toHaveBeenCalled();
   });
 
   it("applies qwen portal auth choices through the shared plugin-provider path", async () => {
