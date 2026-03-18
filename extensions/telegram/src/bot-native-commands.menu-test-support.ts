@@ -1,6 +1,7 @@
+import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/telegram";
 import { expect, vi } from "vitest";
-import type { OpenClawConfig } from "../../../src/config/config.js";
-import type { RuntimeEnv } from "../../../src/runtime.js";
+import type { TelegramBotDeps } from "./bot-deps.js";
 import {
   createNativeCommandTestParams as createBaseNativeCommandTestParams,
   createTelegramPrivateCommandContext,
@@ -10,6 +11,13 @@ import {
 type RegisteredCommand = {
   command: string;
   description: string;
+};
+
+type CreateCommandBotResult = {
+  bot: RegisterTelegramNativeCommandsParams["bot"];
+  commandHandlers: Map<string, (ctx: unknown) => Promise<void>>;
+  sendMessage: ReturnType<typeof vi.fn>;
+  setMyCommands: ReturnType<typeof vi.fn>;
 };
 
 const skillCommandMocks = vi.hoisted(() => ({
@@ -51,7 +59,7 @@ export function resetNativeCommandMenuMocks() {
   deliverReplies.mockResolvedValue({ delivered: true });
 }
 
-export function createCommandBot() {
+export function createCommandBot(): CreateCommandBotResult {
   const commandHandlers = new Map<string, (ctx: unknown) => Promise<void>>();
   const sendMessage = vi.fn().mockResolvedValue(undefined);
   const setMyCommands = vi.fn().mockResolvedValue(undefined);
@@ -71,10 +79,23 @@ export function createNativeCommandTestParams(
   cfg: OpenClawConfig,
   params: Partial<RegisterTelegramNativeCommandsParams> = {},
 ): RegisterTelegramNativeCommandsParams {
+  const telegramDeps: TelegramBotDeps = {
+    loadConfig: vi.fn(() => ({})),
+    resolveStorePath: vi.fn((storePath?: string) => storePath ?? "/tmp/sessions.json"),
+    readChannelAllowFromStore: vi.fn(async () => []),
+    enqueueSystemEvent: vi.fn(),
+    dispatchReplyWithBufferedBlockDispatcher: vi.fn(async () => ({
+      queuedFinal: false,
+      counts: {},
+    })),
+    listSkillCommandsForAgents,
+    wasSentByBot: vi.fn(() => false),
+  };
   return createBaseNativeCommandTestParams({
     cfg,
     runtime: params.runtime ?? ({} as RuntimeEnv),
     nativeSkillsEnabled: true,
+    telegramDeps,
     ...params,
   });
 }
