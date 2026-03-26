@@ -4,7 +4,7 @@ import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { resolveIsNixMode } from "../../config/paths.js";
 import { checkTokenDrift } from "../../daemon/service-audit.js";
 import type { GatewayServiceRestartResult } from "../../daemon/service-types.js";
-import { describeGatewayServiceRestart } from "../../daemon/service.js";
+import { describeGatewayServiceRestart, startGatewayService } from "../../daemon/service.js";
 import type { GatewayService } from "../../daemon/service.js";
 import { renderSystemdUnavailableHints } from "../../daemon/systemd-hints.js";
 import { isSystemdUserServiceAvailable } from "../../daemon/systemd.js";
@@ -14,10 +14,8 @@ import { defaultRuntime } from "../../runtime.js";
 import { resolveGatewayTokenForDriftCheck } from "./gateway-token-drift.js";
 import {
   buildDaemonServiceSnapshot,
-  createNullWriter,
-  type DaemonAction,
+  createDaemonActionContext,
   type DaemonActionResponse,
-  emitDaemonActionJson,
 } from "./response.js";
 import { filterContainerGenericHints } from "./shared.js";
 
@@ -58,23 +56,15 @@ async function maybeAugmentSystemdHints(hints: string[]): Promise<string[]> {
   ];
 }
 
-function createActionIO(params: { action: DaemonAction; json: boolean }) {
-  const stdout = params.json ? createNullWriter() : process.stdout;
-  const emit = (payload: Omit<DaemonActionResponse, "action">) => {
-    if (!params.json) {
-      return;
-    }
-    emitDaemonActionJson({ action: params.action, ...payload });
-  };
-  const fail = (message: string, hints?: string[]) => {
-    if (params.json) {
-      emit({ ok: false, error: message, hints });
-    } else {
-      defaultRuntime.error(message);
-    }
-    defaultRuntime.exit(1);
-  };
-  return { stdout, emit, fail };
+function emitActionMessage(params: {
+  json: boolean;
+  emit: ReturnType<typeof createDaemonActionContext>["emit"];
+  payload: Omit<DaemonActionResponse, "action">;
+}) {
+  params.emit(params.payload);
+  if (!params.json && params.payload.message) {
+    defaultRuntime.log(params.payload.message);
+  }
 }
 
 async function handleServiceNotLoaded(params: {
@@ -83,7 +73,7 @@ async function handleServiceNotLoaded(params: {
   loaded: boolean;
   renderStartHints: () => string[];
   json: boolean;
-  emit: ReturnType<typeof createActionIO>["emit"];
+  emit: ReturnType<typeof createDaemonActionContext>["emit"];
 }) {
   const hints = filterContainerGenericHints(
     await maybeAugmentSystemdHints(params.renderStartHints()),
@@ -106,7 +96,7 @@ async function handleServiceNotLoaded(params: {
 async function resolveServiceLoadedOrFail(params: {
   serviceNoun: string;
   service: GatewayService;
-  fail: ReturnType<typeof createActionIO>["fail"];
+  fail: ReturnType<typeof createDaemonActionContext>["fail"];
 }): Promise<boolean | null> {
   try {
     return await params.service.isLoaded({ env: process.env });
@@ -147,7 +137,7 @@ export async function runServiceUninstall(params: {
   assertNotLoadedAfterUninstall: boolean;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "uninstall", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "uninstall", json });
 
   if (resolveIsNixMode(process.env)) {
     fail("Nix mode detected; service uninstall is disabled.");
@@ -198,14 +188,15 @@ export async function runServiceStart(params: {
   opts?: DaemonLifecycleOptions;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "start", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "start", json });
 
-  const loaded = await resolveServiceLoadedOrFail({
-    serviceNoun: params.serviceNoun,
-    service: params.service,
-    fail,
-  });
-  if (loaded === null) {
+  if (
+    (await resolveServiceLoadedOrFail({
+      serviceNoun: params.serviceNoun,
+      service: params.service,
+      fail,
+    })) === null
+  ) {
     return;
   }
   // Pre-flight config validation (#35862) — run for both loaded and not-loaded
@@ -219,71 +210,45 @@ export async function runServiceStart(params: {
       return;
     }
   }
-  if (!loaded) {
-    // Service was stopped (e.g. `gateway stop` booted out the LaunchAgent).
-    // Attempt a restart, which handles re-bootstrapping the service. Without
-    // this, `start` after `stop` just prints hints and does nothing (#53878).
-    try {
-      const restartResult = await params.service.restart({ env: process.env, stdout });
-      const restartStatus = describeGatewayServiceRestart(params.serviceNoun, restartResult);
-      const postLoaded = await params.service.isLoaded({ env: process.env }).catch(() => true);
-      emit({
-        ok: true,
-        result: restartStatus.daemonActionResult,
-        message: restartStatus.message,
-        service: buildDaemonServiceSnapshot(params.service, postLoaded),
-      });
-      if (!json) {
-        defaultRuntime.log(restartStatus.message);
-      }
-      return;
-    } catch {
-      // Bootstrap failed (e.g. plist was deleted, not just booted out).
-      // Fall through to the not-loaded hints.
+  try {
+    const startResult = await startGatewayService(params.service, { env: process.env, stdout });
+    if (startResult.outcome === "missing-install") {
       await handleServiceNotLoaded({
         serviceNoun: params.serviceNoun,
         service: params.service,
-        loaded,
+        loaded: startResult.state.loaded,
         renderStartHints: params.renderStartHints,
         json,
         emit,
       });
       return;
     }
-  }
-
-  try {
-    const restartResult = await params.service.restart({ env: process.env, stdout });
-    const restartStatus = describeGatewayServiceRestart(params.serviceNoun, restartResult);
-    if (restartStatus.scheduled) {
-      emit({
-        ok: true,
-        result: restartStatus.daemonActionResult,
-        message: restartStatus.message,
-        service: buildDaemonServiceSnapshot(params.service, loaded),
+    if (startResult.outcome === "scheduled") {
+      const restartStatus = describeGatewayServiceRestart(params.serviceNoun, {
+        outcome: "scheduled",
       });
-      if (!json) {
-        defaultRuntime.log(restartStatus.message);
-      }
+      emitActionMessage({
+        json,
+        emit,
+        payload: {
+          ok: true,
+          result: "scheduled",
+          message: restartStatus.message,
+          service: buildDaemonServiceSnapshot(params.service, startResult.state.loaded),
+        },
+      });
       return;
     }
+    emit({
+      ok: true,
+      result: "started",
+      service: buildDaemonServiceSnapshot(params.service, startResult.state.loaded),
+    });
   } catch (err) {
     const hints = params.renderStartHints();
     fail(`${params.serviceNoun} start failed: ${String(err)}`, hints);
     return;
   }
-
-  let started = true;
-  try {
-    started = await params.service.isLoaded({ env: process.env });
-  } catch {
-    started = true;
-  }
-  emit({
-    ok: true,
-    result: "started",
-    service: buildDaemonServiceSnapshot(params.service, started),
-  });
 }
 
 export async function runServiceStop(params: {
@@ -293,7 +258,7 @@ export async function runServiceStop(params: {
   onNotLoaded?: (ctx: NotLoadedActionContext) => Promise<NotLoadedActionResult | null>;
 }) {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "stop", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "stop", json });
 
   const loaded = await resolveServiceLoadedOrFail({
     serviceNoun: params.serviceNoun,
@@ -364,23 +329,24 @@ export async function runServiceRestart(params: {
   onNotLoaded?: (ctx: NotLoadedActionContext) => Promise<NotLoadedActionResult | null>;
 }): Promise<boolean> {
   const json = Boolean(params.opts?.json);
-  const { stdout, emit, fail } = createActionIO({ action: "restart", json });
+  const { stdout, emit, fail } = createDaemonActionContext({ action: "restart", json });
   const warnings: string[] = [];
   let handledNotLoaded: NotLoadedActionResult | null = null;
   const emitScheduledRestart = (
     restartStatus: ReturnType<typeof describeGatewayServiceRestart>,
     serviceLoaded: boolean,
   ) => {
-    emit({
-      ok: true,
-      result: restartStatus.daemonActionResult,
-      message: restartStatus.message,
-      service: buildDaemonServiceSnapshot(params.service, serviceLoaded),
-      warnings: warnings.length ? warnings : undefined,
+    emitActionMessage({
+      json,
+      emit,
+      payload: {
+        ok: true,
+        result: restartStatus.daemonActionResult,
+        message: restartStatus.message,
+        service: buildDaemonServiceSnapshot(params.service, serviceLoaded),
+        warnings: warnings.length ? warnings : undefined,
+      },
     });
-    if (!json) {
-      defaultRuntime.log(restartStatus.message);
-    }
     return true;
   };
 
