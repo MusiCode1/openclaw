@@ -9,15 +9,14 @@ import * as grammy from "grammy";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-runtime";
 import { loadConfig } from "openclaw/plugin-sdk/config-runtime";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/config-runtime";
-import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/infra-runtime";
-import { formatUncaughtError } from "openclaw/plugin-sdk/infra-runtime";
-import { createTelegramRetryRunner } from "openclaw/plugin-sdk/infra-runtime";
-import type { RetryConfig } from "openclaw/plugin-sdk/infra-runtime";
+import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-runtime";
+import { formatUncaughtError } from "openclaw/plugin-sdk/error-runtime";
 import type { MediaKind } from "openclaw/plugin-sdk/media-runtime";
 import { buildOutboundMediaLoadOptions } from "openclaw/plugin-sdk/media-runtime";
 import { getImageMetadata } from "openclaw/plugin-sdk/media-runtime";
 import { isGifMedia, kindFromMime } from "openclaw/plugin-sdk/media-runtime";
 import { normalizePollInput, type PollInput } from "openclaw/plugin-sdk/media-runtime";
+import { createTelegramRetryRunner, type RetryConfig } from "openclaw/plugin-sdk/retry-runtime";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { formatErrorMessage } from "openclaw/plugin-sdk/ssrf-runtime";
@@ -43,6 +42,7 @@ import {
   normalizeTelegramLookupTarget,
   parseTelegramTarget,
 } from "./targets.js";
+import { normalizeTelegramReplyToMessageId } from "./outbound-params.js";
 import { resolveTelegramVoiceSend } from "./voice.js";
 
 type TelegramApi = Bot["api"];
@@ -417,8 +417,8 @@ function buildTelegramThreadReplyParams(params: {
   const threadIdParams = buildTelegramThreadParams(threadSpec);
   const threadParams: TelegramThreadReplyParams = threadIdParams ? { ...threadIdParams } : {};
 
-  if (params.replyToMessageId != null) {
-    const replyToMessageId = Math.trunc(params.replyToMessageId);
+  const replyToMessageId = normalizeTelegramReplyToMessageId(params.replyToMessageId);
+  if (replyToMessageId != null) {
     if (params.quoteText?.trim()) {
       threadParams.reply_parameters = {
         message_id: replyToMessageId,
