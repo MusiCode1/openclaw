@@ -1068,7 +1068,8 @@
                       "concepts/memory-builtin",
                       "concepts/memory-qmd",
                       "concepts/memory-honcho",
-                      "concepts/memory-search"
+                      "concepts/memory-search",
+                      "concepts/memory-dreaming"
                     ]
                   },
                   "concepts/compaction"
@@ -1177,6 +1178,7 @@
                       "tools/gemini-search",
                       "tools/grok-search",
                       "tools/kimi-search",
+                      "tools/ollama-search",
                       "tools/perplexity-search",
                       "tools/searxng-search",
                       "tools/tavily"
@@ -1249,6 +1251,7 @@
                   "providers/qwen_modelstudio",
                   "providers/qwen",
                   "providers/sglang",
+                  "providers/stepfun",
                   "providers/synthetic",
                   "providers/together",
                   "providers/venice",
