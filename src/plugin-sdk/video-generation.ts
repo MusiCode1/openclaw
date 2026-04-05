@@ -3,8 +3,8 @@
 export type {
   GeneratedVideoAsset,
   VideoGenerationProvider,
-  VideoGenerationProviderCapabilities,
   VideoGenerationRequest,
+  VideoGenerationResolution,
   VideoGenerationResult,
-  VideoGenerationSourceImage,
+  VideoGenerationSourceAsset,
 } from "../video-generation/types.js";

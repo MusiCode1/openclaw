@@ -5,15 +5,17 @@ export type GeneratedVideoAsset = {
   buffer: Buffer;
   mimeType: string;
   fileName?: string;
-  durationSeconds?: number;
   metadata?: Record<string, unknown>;
 };
 
-export type VideoGenerationSourceImage = {
+export type VideoGenerationResolution = "480P" | "720P" | "1080P";
+
+export type VideoGenerationSourceAsset = {
   url?: string;
   buffer?: Buffer;
   mimeType?: string;
-  role: "first_frame" | "last_frame";
+  fileName?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type VideoGenerationRequest = {
@@ -24,15 +26,14 @@ export type VideoGenerationRequest = {
   agentDir?: string;
   authStore?: AuthProfileStore;
   timeoutMs?: number;
-  durationSeconds?: number;
+  size?: string;
   aspectRatio?: string;
-  resolution?: string;
-  seed?: number;
+  resolution?: VideoGenerationResolution;
+  durationSeconds?: number;
+  audio?: boolean;
   watermark?: boolean;
-  firstFrameImage?: VideoGenerationSourceImage;
-  lastFrameImage?: VideoGenerationSourceImage;
-  /** Provider-specific options (e.g. camerafixed, draft). */
-  providerOptions?: Record<string, unknown>;
+  inputImages?: VideoGenerationSourceAsset[];
+  inputVideos?: VideoGenerationSourceAsset[];
 };
 
 export type VideoGenerationResult = {
@@ -42,13 +43,15 @@ export type VideoGenerationResult = {
 };
 
 export type VideoGenerationProviderCapabilities = {
-  supportsDuration?: boolean;
+  maxVideos?: number;
+  maxInputImages?: number;
+  maxInputVideos?: number;
+  maxDurationSeconds?: number;
+  supportsSize?: boolean;
   supportsAspectRatio?: boolean;
   supportsResolution?: boolean;
-  maxDurationSeconds?: number;
-  minDurationSeconds?: number;
-  aspectRatios?: string[];
-  resolutions?: string[];
+  supportsAudio?: boolean;
+  supportsWatermark?: boolean;
 };
 
 export type VideoGenerationProvider = {
