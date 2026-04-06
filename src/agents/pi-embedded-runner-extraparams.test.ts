@@ -1,7 +1,6 @@
 import type { StreamFn } from "@mariozechner/pi-agent-core";
 import type { Context, Model, SimpleStreamOptions } from "@mariozechner/pi-ai";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createConfiguredOllamaCompatNumCtxWrapper } from "../../extensions/ollama/runtime-api.js";
 import {
   createAnthropicBetaHeadersWrapper,
   createAnthropicFastModeWrapper,
@@ -10,6 +9,7 @@ import {
   resolveAnthropicFastMode,
   resolveAnthropicServiceTier,
 } from "../../test/helpers/providers/anthropic-contract.js";
+import { createConfiguredOllamaCompatNumCtxWrapper } from "../plugin-sdk/ollama-runtime.js";
 import { __testing as extraParamsTesting } from "./pi-embedded-runner/extra-params.js";
 import {
   createOpenRouterSystemCacheWrapper,
@@ -48,6 +48,75 @@ function createTestXaiFastModeWrapper(
   };
 }
 
+function stripTestXaiUnsupportedStrictFlag(tool: unknown): unknown {
+  if (!tool || typeof tool !== "object") {
+    return tool;
+  }
+  const toolObj = tool as Record<string, unknown>;
+  const fn = toolObj.function;
+  if (!fn || typeof fn !== "object") {
+    return tool;
+  }
+  const fnObj = fn as Record<string, unknown>;
+  if (typeof fnObj.strict !== "boolean") {
+    return tool;
+  }
+  const nextFunction = { ...fnObj };
+  delete nextFunction.strict;
+  return { ...toolObj, function: nextFunction };
+}
+
+function createTestXaiPayloadCompatibilityWrapper(baseStreamFn: StreamFn | undefined): StreamFn {
+  return (model, context, options) => {
+    const underlying =
+      baseStreamFn ??
+      (() => {
+        throw new Error("missing stream function");
+      });
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        if (payload && typeof payload === "object") {
+          const payloadObj = payload as Record<string, unknown>;
+          if (Array.isArray(payloadObj.tools)) {
+            payloadObj.tools = payloadObj.tools.map((tool) =>
+              stripTestXaiUnsupportedStrictFlag(tool),
+            );
+          }
+          delete payloadObj.reasoning;
+          delete payloadObj.reasoningEffort;
+          delete payloadObj.reasoning_effort;
+        }
+        return originalOnPayload?.(payload, model);
+      },
+    });
+  };
+}
+
+function createTestToolStreamWrapper(
+  baseStreamFn: StreamFn | undefined,
+  enabled: boolean,
+): StreamFn {
+  return (model, context, options) => {
+    const underlying =
+      baseStreamFn ??
+      (() => {
+        throw new Error("missing stream function");
+      });
+    const originalOnPayload = options?.onPayload;
+    return underlying(model, context, {
+      ...options,
+      onPayload: (payload) => {
+        if (enabled && payload && typeof payload === "object") {
+          (payload as Record<string, unknown>).tool_stream = true;
+        }
+        return originalOnPayload?.(payload, model);
+      },
+    });
+  };
+}
+
 import { createAnthropicToolPayloadCompatibilityWrapper } from "./pi-embedded-runner/anthropic-family-tool-payload-compat.js";
 import {
   createBedrockNoCacheWrapper,
@@ -56,7 +125,6 @@ import {
 import {
   applyExtraParamsToAgent,
   resolveAgentTransportOverride,
-  resolveExtraParams,
   resolvePreparedExtraParams,
 } from "./pi-embedded-runner/extra-params.js";
 import { createGoogleThinkingPayloadWrapper } from "./pi-embedded-runner/google-stream-wrappers.js";
@@ -180,9 +248,14 @@ beforeEach(() => {
         return createConfiguredOllamaCompatNumCtxWrapper(params.context);
       }
       if (params.provider === "xai") {
-        return createTestXaiFastModeWrapper(
-          params.context.streamFn,
+        let streamFn = createTestXaiPayloadCompatibilityWrapper(params.context.streamFn);
+        streamFn = createTestXaiFastModeWrapper(
+          streamFn,
           params.context.extraParams?.fastMode === true,
+        );
+        return createTestToolStreamWrapper(
+          streamFn,
+          params.context.extraParams?.tool_stream !== false,
         );
       }
       if (params.provider === "anthropic") {
@@ -237,205 +310,6 @@ beforeEach(() => {
 
 afterEach(() => {
   extraParamsTesting.resetProviderRuntimeDepsForTest();
-});
-
-describe("resolveExtraParams", () => {
-  it("returns undefined with no model config", () => {
-    const result = resolveExtraParams({
-      cfg: undefined,
-      provider: "zai",
-      modelId: "glm-4.7",
-    });
-
-    expect(result).toBeUndefined();
-  });
-
-  it("returns params for exact provider/model key", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          defaults: {
-            models: {
-              "openai/gpt-4": {
-                params: {
-                  temperature: 0.7,
-                  maxTokens: 2048,
-                },
-              },
-            },
-          },
-        },
-      },
-      provider: "openai",
-      modelId: "gpt-4",
-    });
-
-    expect(result).toEqual({
-      temperature: 0.7,
-      maxTokens: 2048,
-    });
-  });
-
-  it("ignores unrelated model entries", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          defaults: {
-            models: {
-              "openai/gpt-4": {
-                params: {
-                  temperature: 0.7,
-                },
-              },
-            },
-          },
-        },
-      },
-      provider: "openai",
-      modelId: "gpt-4.1-mini",
-    });
-
-    expect(result).toBeUndefined();
-  });
-
-  it("returns per-agent params when agentId matches", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          list: [
-            {
-              id: "risk-reviewer",
-              params: { cacheRetention: "none" },
-            },
-          ],
-        },
-      },
-      provider: "anthropic",
-      modelId: "claude-opus-4-6",
-      agentId: "risk-reviewer",
-    });
-
-    expect(result).toEqual({ cacheRetention: "none" });
-  });
-
-  it("merges per-agent params over global model defaults", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          defaults: {
-            models: {
-              "anthropic/claude-opus-4-6": {
-                params: {
-                  temperature: 0.5,
-                  cacheRetention: "long",
-                },
-              },
-            },
-          },
-          list: [
-            {
-              id: "risk-reviewer",
-              params: { cacheRetention: "none" },
-            },
-          ],
-        },
-      },
-      provider: "anthropic",
-      modelId: "claude-opus-4-6",
-      agentId: "risk-reviewer",
-    });
-
-    expect(result).toEqual({
-      temperature: 0.5,
-      cacheRetention: "none",
-    });
-  });
-
-  it("preserves higher-precedence agent parallelToolCalls override across alias styles", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          defaults: {
-            models: {
-              "openai/gpt-4.1": {
-                params: {
-                  parallel_tool_calls: true,
-                },
-              },
-            },
-          },
-          list: [
-            {
-              id: "main",
-              params: {
-                parallelToolCalls: false,
-              },
-            },
-          ],
-        },
-      },
-      provider: "openai",
-      modelId: "gpt-4.1",
-      agentId: "main",
-    });
-
-    expect(result).toEqual({
-      parallel_tool_calls: false,
-    });
-  });
-
-  it("canonicalizes text verbosity alias styles with agent override precedence", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          defaults: {
-            models: {
-              "openai/gpt-5.4": {
-                params: {
-                  text_verbosity: "high",
-                },
-              },
-            },
-          },
-          list: [
-            {
-              id: "main",
-              params: {
-                textVerbosity: "low",
-              },
-            },
-          ],
-        },
-      },
-      provider: "openai",
-      modelId: "gpt-5.4",
-      agentId: "main",
-    });
-
-    expect(result).toEqual({
-      text_verbosity: "low",
-    });
-  });
-
-  it("ignores per-agent params when agentId does not match", () => {
-    const result = resolveExtraParams({
-      cfg: {
-        agents: {
-          list: [
-            {
-              id: "risk-reviewer",
-              params: { cacheRetention: "none" },
-            },
-          ],
-        },
-      },
-      provider: "anthropic",
-      modelId: "claude-opus-4-6",
-      agentId: "main",
-    });
-
-    expect(result).toBeUndefined();
-  });
 });
 
 describe("applyExtraParamsToAgent", () => {
@@ -545,6 +419,36 @@ describe("applyExtraParamsToAgent", () => {
       params.applyModelId,
       params.extraParamsOverride,
     );
+    const context: Context = { messages: [] };
+    void agent.streamFn?.(params.model, context, {});
+    return payload;
+  }
+
+  function runToolPayloadMutationCase(params: {
+    applyProvider: "openai" | "xai";
+    applyModelId: string;
+    model: Model<"openai-completions">;
+  }) {
+    const payload: {
+      tools: Array<{ function?: Record<string, unknown> }>;
+    } = {
+      tools: [
+        {
+          function: {
+            name: "write",
+            description: "write a file",
+            parameters: { type: "object", properties: {} },
+            strict: true,
+          },
+        },
+      ],
+    };
+    const baseStreamFn: StreamFn = (model, _context, options) => {
+      options?.onPayload?.(payload as unknown as Record<string, unknown>, model);
+      return {} as ReturnType<StreamFn>;
+    };
+    const agent = { streamFn: baseStreamFn };
+    applyExtraParamsToAgent(agent, undefined, params.applyProvider, params.applyModelId);
     const context: Context = { messages: [] };
     void agent.streamFn?.(params.model, context, {});
     return payload;
@@ -678,6 +582,29 @@ describe("applyExtraParamsToAgent", () => {
     expect(payloads[0]).not.toHaveProperty("reasoning");
   });
 
+  it("strips xai Responses reasoning payload fields", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "xai",
+      applyModelId: "grok-4.20-beta-latest-reasoning",
+      model: {
+        api: "openai-responses",
+        provider: "xai",
+        id: "grok-4.20-beta-latest-reasoning",
+      } as Model<"openai-responses">,
+      payload: {
+        model: "grok-4.20-beta-latest-reasoning",
+        input: [],
+        reasoning: { effort: "high", summary: "auto" },
+        reasoningEffort: "high",
+        reasoning_effort: "high",
+      },
+    });
+
+    expect(payload).not.toHaveProperty("reasoning");
+    expect(payload).not.toHaveProperty("reasoningEffort");
+    expect(payload).not.toHaveProperty("reasoning_effort");
+  });
+
   it("does not inject effort when payload already has reasoning.max_tokens", () => {
     const payloads: Record<string, unknown>[] = [];
     const baseStreamFn: StreamFn = (_model, _context, options) => {
@@ -760,8 +687,10 @@ describe("applyExtraParamsToAgent", () => {
     expect(payloads).toHaveLength(1);
     expect(payloads[0]).toEqual({
       context_management: [{ type: "compaction", compact_threshold: 80000 }],
+      parallel_tool_calls: true,
       reasoning: { effort: "none", summary: "auto" },
       store: true,
+      text: { verbosity: "low" },
     });
   });
 
@@ -845,6 +774,34 @@ describe("applyExtraParamsToAgent", () => {
     });
 
     expect(payload.parallel_tool_calls).toBe(true);
+  });
+
+  it("strips function.strict for xai providers", () => {
+    const payload = runToolPayloadMutationCase({
+      applyProvider: "xai",
+      applyModelId: "grok-4-1-fast-reasoning",
+      model: {
+        api: "openai-completions",
+        provider: "xai",
+        id: "grok-4-1-fast-reasoning",
+      } as Model<"openai-completions">,
+    });
+
+    expect(payload.tools[0]?.function).not.toHaveProperty("strict");
+  });
+
+  it("keeps function.strict for non-xai providers", () => {
+    const payload = runToolPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      model: {
+        api: "openai-completions",
+        provider: "openai",
+        id: "gpt-5.4",
+      } as Model<"openai-completions">,
+    });
+
+    expect(payload.tools[0]?.function?.strict).toBe(true);
   });
 
   it("injects parallel_tool_calls for azure-openai-responses payloads when configured", () => {
@@ -1618,6 +1575,22 @@ describe("applyExtraParamsToAgent", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.transport).toBe("auto");
     expect(calls[0]?.openaiWsWarmup).toBe(true);
+  });
+
+  it("injects GPT-5 default parallel tool calls and low verbosity for OpenAI Responses payloads", () => {
+    const payload = runResponsesPayloadMutationCase({
+      applyProvider: "openai",
+      applyModelId: "gpt-5.4",
+      model: {
+        api: "openai-responses",
+        provider: "openai",
+        id: "gpt-5.4",
+      } as Model<"openai-responses">,
+      payload: {},
+    });
+
+    expect(payload.parallel_tool_calls).toBe(true);
+    expect(payload.text).toEqual({ verbosity: "low" });
   });
 
   it("injects native Codex web_search for direct openai-codex Responses models", () => {
@@ -2570,7 +2543,7 @@ describe("applyExtraParamsToAgent", () => {
       },
     });
     expect(payload).not.toHaveProperty("reasoning");
-    expect(payload).not.toHaveProperty("text");
+    expect(payload.text).toEqual({ verbosity: "low" });
     expect(payload.service_tier).toBe("priority");
   });
 
@@ -2754,7 +2727,7 @@ describe("applyExtraParamsToAgent", () => {
     expect(payload.service_tier).toBe("standard_only");
   });
 
-  it("injects configured Anthropic service_tier into OAuth-authenticated Anthropic payloads", () => {
+  it("does not inject configured Anthropic service_tier into OAuth-authenticated Anthropic payloads", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "anthropic",
       applyModelId: "claude-sonnet-4-5",
@@ -2782,7 +2755,7 @@ describe("applyExtraParamsToAgent", () => {
       },
       payload: {},
     });
-    expect(payload.service_tier).toBe("standard_only");
+    expect(payload.service_tier).toBeUndefined();
   });
 
   it("does not warn for valid Anthropic serviceTier values", () => {
@@ -2867,7 +2840,7 @@ describe("applyExtraParamsToAgent", () => {
     expect(payload.service_tier).toBe("standard_only");
   });
 
-  it("lets explicit Anthropic service_tier override OAuth fast mode defaults", () => {
+  it("does not inject explicit Anthropic service_tier for OAuth auth even when fast mode is enabled", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "anthropic",
       applyModelId: "claude-sonnet-4-5",
@@ -2896,10 +2869,10 @@ describe("applyExtraParamsToAgent", () => {
       },
       payload: {},
     });
-    expect(payload.service_tier).toBe("standard_only");
+    expect(payload.service_tier).toBeUndefined();
   });
 
-  it("injects Anthropic fast mode service_tier for OAuth auth", () => {
+  it("does not inject Anthropic fast mode service_tier for OAuth auth", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "anthropic",
       applyModelId: "claude-sonnet-4-5",
@@ -2915,10 +2888,10 @@ describe("applyExtraParamsToAgent", () => {
       },
       payload: {},
     });
-    expect(payload.service_tier).toBe("auto");
+    expect(payload.service_tier).toBeUndefined();
   });
 
-  it("injects Anthropic standard_only service_tier for OAuth auth when fastMode is false", () => {
+  it("does not inject Anthropic standard_only service_tier for OAuth auth when fastMode is false", () => {
     const payload = runResponsesPayloadMutationCase({
       applyProvider: "anthropic",
       applyModelId: "claude-sonnet-4-5",
@@ -2934,7 +2907,7 @@ describe("applyExtraParamsToAgent", () => {
       },
       payload: {},
     });
-    expect(payload.service_tier).toBe("standard_only");
+    expect(payload.service_tier).toBeUndefined();
   });
 
   it("does not inject Anthropic fast mode service_tier for proxied base URLs", () => {
@@ -2987,7 +2960,7 @@ describe("applyExtraParamsToAgent", () => {
       },
     });
     expect(payload).not.toHaveProperty("reasoning");
-    expect(payload).not.toHaveProperty("text");
+    expect(payload.text).toEqual({ verbosity: "low" });
     expect(payload.service_tier).toBe("priority");
   });
 

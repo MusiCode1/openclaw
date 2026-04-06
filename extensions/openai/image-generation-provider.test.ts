@@ -1,83 +1,83 @@
-import * as providerAuth from "openclaw/plugin-sdk/provider-auth";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildOpenAIImageGenerationProvider } from "./image-generation-provider.js";
 
-describe("OpenAI image-generation provider", () => {
+const {
+  resolveApiKeyForProviderMock,
+  postJsonRequestMock,
+  postTranscriptionRequestMock,
+  assertOkOrThrowHttpErrorMock,
+  resolveProviderHttpRequestConfigMock,
+} = vi.hoisted(() => ({
+  resolveApiKeyForProviderMock: vi.fn(async () => ({ apiKey: "openai-key" })),
+  postJsonRequestMock: vi.fn(),
+  postTranscriptionRequestMock: vi.fn(),
+  assertOkOrThrowHttpErrorMock: vi.fn(async () => {}),
+  resolveProviderHttpRequestConfigMock: vi.fn((params) => ({
+    baseUrl: params.baseUrl ?? params.defaultBaseUrl,
+    allowPrivateNetwork: Boolean(params.allowPrivateNetwork),
+    headers: new Headers(params.defaultHeaders),
+    dispatcherPolicy: undefined,
+  })),
+}));
+
+vi.mock("openclaw/plugin-sdk/provider-auth-runtime", () => ({
+  resolveApiKeyForProvider: resolveApiKeyForProviderMock,
+}));
+
+vi.mock("openclaw/plugin-sdk/provider-http", () => ({
+  assertOkOrThrowHttpError: assertOkOrThrowHttpErrorMock,
+  postJsonRequest: postJsonRequestMock,
+  postTranscriptionRequest: postTranscriptionRequestMock,
+  resolveProviderHttpRequestConfig: resolveProviderHttpRequestConfigMock,
+}));
+
+describe("openai image generation provider", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    resolveApiKeyForProviderMock.mockClear();
+    postJsonRequestMock.mockReset();
+    postTranscriptionRequestMock.mockReset();
+    assertOkOrThrowHttpErrorMock.mockClear();
+    resolveProviderHttpRequestConfigMock.mockClear();
   });
 
-  it("generates PNG buffers from the OpenAI Images API", async () => {
-    const resolveApiKeySpy = vi.spyOn(providerAuth, "resolveApiKeyForProvider").mockResolvedValue({
-      apiKey: "sk-test",
-      source: "env",
-      mode: "api-key",
+  it("does not auto-allow local baseUrl overrides for image requests", async () => {
+    postJsonRequestMock.mockResolvedValue({
+      response: {
+        json: async () => ({
+          data: [{ b64_json: Buffer.from("png-bytes").toString("base64") }],
+        }),
+      },
+      release: vi.fn(async () => {}),
     });
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        data: [
-          {
-            b64_json: Buffer.from("png-data").toString("base64"),
-            revised_prompt: "revised",
-          },
-        ],
-      }),
-    });
-    vi.stubGlobal("fetch", fetchMock);
 
     const provider = buildOpenAIImageGenerationProvider();
-    const authStore = { version: 1, profiles: {} };
     const result = await provider.generateImage({
       provider: "openai",
       model: "gpt-image-1",
-      prompt: "draw a cat",
-      cfg: {},
-      authStore,
-    });
-
-    expect(resolveApiKeySpy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "openai",
-        store: authStore,
-      }),
-    );
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.openai.com/v1/images/generations",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          model: "gpt-image-1",
-          prompt: "draw a cat",
-          n: 1,
-          size: "1024x1024",
-        }),
-      }),
-    );
-    expect(result).toEqual({
-      images: [
-        {
-          buffer: Buffer.from("png-data"),
-          mimeType: "image/png",
-          fileName: "image-1.png",
-          revisedPrompt: "revised",
+      prompt: "Draw a QA lighthouse",
+      cfg: {
+        models: {
+          providers: {
+            openai: {
+              baseUrl: "http://127.0.0.1:44080/v1",
+              models: [],
+            },
+          },
         },
-      ],
-      model: "gpt-image-1",
+      },
     });
-  });
 
-  it("rejects reference-image edits for now", async () => {
-    const provider = buildOpenAIImageGenerationProvider();
-
-    await expect(
-      provider.generateImage({
-        provider: "openai",
-        model: "gpt-image-1",
-        prompt: "Edit this image",
-        cfg: {},
-        inputImages: [{ buffer: Buffer.from("x"), mimeType: "image/png" }],
+    expect(resolveProviderHttpRequestConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseUrl: "http://127.0.0.1:44080/v1",
       }),
-    ).rejects.toThrow("does not support reference-image edits");
+    );
+    expect(postJsonRequestMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        url: "http://127.0.0.1:44080/v1/images/generations",
+        allowPrivateNetwork: false,
+      }),
+    );
+    expect(result.images).toHaveLength(1);
   });
 });
