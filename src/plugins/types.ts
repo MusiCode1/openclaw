@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { AgentMessage } from "@mariozechner/pi-agent-core";
 import type { StreamFn } from "@mariozechner/pi-agent-core";
-import type { ModelRegistry } from "@mariozechner/pi-coding-agent";
+import type { ExtensionFactory, ModelRegistry } from "@mariozechner/pi-coding-agent";
 import type { Command } from "commander";
 import type {
   ApiKeyCredential,
@@ -48,6 +48,7 @@ import type {
 } from "../realtime-voice/provider-types.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { SecurityAuditFinding } from "../security/audit.types.js";
+import type { JsonSchemaObject } from "../shared/json-schema.types.js";
 import type {
   SpeechDirectiveTokenParseContext,
   SpeechDirectiveTokenParseResult,
@@ -75,6 +76,7 @@ import type {
   PluginTextReplacement,
   PluginTextTransforms,
 } from "./cli-backend.types.js";
+import type { CodexAppServerExtensionFactory } from "./codex-app-server-extension-types.js";
 import type {
   PluginConversationBinding,
   PluginConversationBindingRequestParams,
@@ -220,7 +222,7 @@ export type OpenClawPluginConfigSchema = {
   parse?: (value: unknown) => unknown;
   validate?: (value: unknown) => PluginConfigValidation;
   uiHints?: Record<string, PluginConfigUiHint>;
-  jsonSchema?: Record<string, unknown>;
+  jsonSchema?: JsonSchemaObject;
 };
 
 export type ProviderAuthKind = "oauth" | "api_key" | "token" | "device_code" | "custom";
@@ -238,6 +240,12 @@ export type ProviderAuthResult = {
   configPatch?: Partial<OpenClawConfig>;
   defaultModel?: string;
   notes?: string[];
+  /**
+   * Opt in to replace `agents.defaults.models` wholesale with the patch map.
+   * Default behavior merges the map so other providers' entries survive.
+   * Set only from migrations that intentionally rename/remove model keys.
+   */
+  replaceDefaultModels?: boolean;
 };
 
 /** Interactive auth context passed to provider login/setup methods. */
@@ -1760,10 +1768,6 @@ export type PluginInteractiveHandlerResult = {
   handled?: boolean;
 } | void;
 
-type BivariantInteractiveHandler<TContext, TResult> = {
-  bivarianceHack: (ctx: TContext) => Promise<TResult> | TResult;
-}["bivarianceHack"];
-
 export type PluginInteractiveRegistration<
   TContext = unknown,
   TChannel extends string = string,
@@ -1771,7 +1775,7 @@ export type PluginInteractiveRegistration<
 > = {
   channel: TChannel;
   namespace: string;
-  handler: BivariantInteractiveHandler<TContext, TResult>;
+  handler: (ctx: TContext) => Promise<TResult> | TResult;
 };
 
 export type PluginInteractiveHandlerRegistration = PluginInteractiveRegistration;
@@ -2007,6 +2011,10 @@ export type OpenClawPluginApi = {
   ) => void;
   /** Register an agent harness implementation. */
   registerAgentHarness: (harness: AgentHarness) => void;
+  /** Register a Pi embedded extension factory for OpenClaw embedded runs. Only bundled plugins may use this seam, and `contracts.embeddedExtensionFactories` must include `"pi"`. */
+  registerEmbeddedExtensionFactory: (factory: ExtensionFactory) => void;
+  /** Register a Codex app-server extension factory for Codex harness tool-result middleware. Only bundled plugins may use this seam, and `contracts.embeddedExtensionFactories` must include `"codex-app-server"`. */
+  registerCodexAppServerExtensionFactory: (factory: CodexAppServerExtensionFactory) => void;
   /** Register the active detached task runtime for this plugin (exclusive slot). */
   registerDetachedTaskRuntime: (
     runtime: import("./runtime/runtime-tasks.types.js").DetachedTaskLifecycleRuntime,
