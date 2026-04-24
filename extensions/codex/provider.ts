@@ -1,3 +1,4 @@
+import { resolvePluginConfigObject } from "openclaw/plugin-sdk/config-runtime";
 import type { ProviderRuntimeModel } from "openclaw/plugin-sdk/plugin-entry";
 import {
   normalizeModelCompat,
@@ -52,12 +53,15 @@ export function buildCodexProvider(options: BuildCodexProviderOptions = {}): Pro
     auth: [],
     catalog: {
       order: "late",
-      run: async (ctx) =>
-        buildCodexProviderCatalog({
+      run: async (ctx) => {
+        const runtimePluginConfig = resolvePluginConfigObject(ctx.config, CODEX_PROVIDER_ID);
+        const pluginConfig = runtimePluginConfig ?? (ctx.config ? undefined : options.pluginConfig);
+        return await buildCodexProviderCatalog({
           env: ctx.env,
-          pluginConfig: options.pluginConfig,
+          pluginConfig,
           listModels: options.listModels,
-        }),
+        });
+      },
     },
     staticCatalog: {
       order: "late",
@@ -106,7 +110,7 @@ export async function buildCodexProviderCatalog(
   };
 }
 
-function resolveCodexDynamicModel(modelId: string): ProviderRuntimeModel | undefined {
+function resolveCodexDynamicModel(modelId: string) {
   const id = modelId.trim();
   if (!id) {
     return undefined;
@@ -187,5 +191,7 @@ function isKnownXHighCodexModel(modelId: string): boolean {
 
 function isModernCodexModel(modelId: string): boolean {
   const lower = modelId.trim().toLowerCase();
-  return lower === "gpt-5.4" || lower === "gpt-5.4-mini" || lower === "gpt-5.2";
+  return (
+    lower === "gpt-5.5" || lower === "gpt-5.4" || lower === "gpt-5.4-mini" || lower === "gpt-5.2"
+  );
 }
