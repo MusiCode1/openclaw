@@ -582,6 +582,28 @@ describe("runWithModelFallback", () => {
     });
   });
 
+  it("classifies non-GPT incomplete terminal errors for configured fallback", () => {
+    const runResult: EmbeddedPiRunResult = {
+      payloads: [
+        { text: "⚠️ Agent couldn't generate a response. Please try again.", isError: true },
+      ],
+      meta: {
+        durationMs: 1,
+      },
+    };
+
+    expect(
+      classifyEmbeddedPiRunResultForModelFallback({
+        provider: "anthropic",
+        model: "claude-opus-4.7",
+        result: runResult,
+      }),
+    ).toMatchObject({
+      code: "incomplete_result",
+      reason: "format",
+    });
+  });
+
   it("keeps aborted harness-classified GPT-5 runs out of fallback", () => {
     const runResult: EmbeddedPiRunResult = {
       payloads: [],
@@ -1014,7 +1036,7 @@ describe("runWithModelFallback", () => {
       });
 
       expect(result.result).toBe("ok");
-      const warning = warnLogs.findText('Model "openai/gpt-6spoof" not found');
+      const warning = await warnLogs.findText('Model "openai/gpt-6spoof" not found');
       expect(warning).toContain('Model "openai/gpt-6spoof" not found');
       expect(warning).not.toContain("\u001B");
       expect(warning).not.toContain("\n");

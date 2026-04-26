@@ -166,6 +166,24 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 description:
                   "Collector endpoint URL used for OpenTelemetry export transport, including scheme and port. Use a reachable, trusted collector endpoint and monitor ingestion errors after rollout.",
               },
+              tracesEndpoint: {
+                type: "string",
+                title: "OpenTelemetry Traces Endpoint",
+                description:
+                  "Signal-specific OTLP/HTTP trace endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for trace export only.",
+              },
+              metricsEndpoint: {
+                type: "string",
+                title: "OpenTelemetry Metrics Endpoint",
+                description:
+                  "Signal-specific OTLP/HTTP metrics endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for metrics export only.",
+              },
+              logsEndpoint: {
+                type: "string",
+                title: "OpenTelemetry Logs Endpoint",
+                description:
+                  "Signal-specific OTLP/HTTP logs endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for log export only.",
+              },
               protocol: {
                 anyOf: [
                   {
@@ -502,6 +520,37 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
         description:
           "CLI presentation controls for local command output behavior such as banner and tagline style. Use this section to keep startup output aligned with operator preference without changing runtime behavior.",
       },
+      crestodian: {
+        type: "object",
+        properties: {
+          rescue: {
+            type: "object",
+            properties: {
+              enabled: {
+                anyOf: [
+                  {
+                    type: "string",
+                    const: "auto",
+                  },
+                  {
+                    type: "boolean",
+                  },
+                ],
+              },
+              ownerDmOnly: {
+                type: "boolean",
+              },
+              pendingTtlMinutes: {
+                type: "integer",
+                exclusiveMinimum: 0,
+                maximum: 9007199254740991,
+              },
+            },
+            additionalProperties: false,
+          },
+        },
+        additionalProperties: false,
+      },
       update: {
         type: "object",
         properties: {
@@ -603,6 +652,30 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             description:
               "Timeout in milliseconds for post-connect CDP handshake readiness checks against remote browser targets. Raise this for slow-start remote browsers and lower to fail fast in automation loops.",
           },
+          localLaunchTimeoutMs: {
+            type: "integer",
+            exclusiveMinimum: 0,
+            maximum: 120000,
+            title: "Browser Local Launch Timeout (ms)",
+            description:
+              "Timeout in milliseconds for locally launched managed Chrome to expose its CDP HTTP endpoint after process start. Raise this on slow single-board computers or older hosts.",
+          },
+          localCdpReadyTimeoutMs: {
+            type: "integer",
+            exclusiveMinimum: 0,
+            maximum: 120000,
+            title: "Browser Local CDP Ready Timeout (ms)",
+            description:
+              "Timeout in milliseconds for a locally launched managed browser to finish CDP websocket readiness after the process is discovered. Raise this when Chrome starts but browser start still reports CDP not reachable.",
+          },
+          actionTimeoutMs: {
+            type: "integer",
+            exclusiveMinimum: 0,
+            maximum: 9007199254740991,
+            title: "Browser Action Timeout (ms)",
+            description:
+              "Default timeout in milliseconds for browser act requests before the client gives up waiting. Raise this when healthy waits or UI interactions exceed the default request budget.",
+          },
           color: {
             type: "string",
             title: "Browser Accent Color",
@@ -613,7 +686,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             type: "string",
             title: "Browser Executable Path",
             description:
-              "Explicit browser executable path when auto-discovery is insufficient for your host environment. Use absolute stable paths so launch behavior stays deterministic across restarts.",
+              "Explicit browser executable path when auto-discovery is insufficient for your host environment. Use an absolute stable path, or a path starting with ~ for your OS home directory, so launch behavior stays deterministic across restarts.",
           },
           headless: {
             type: "boolean",
@@ -723,7 +796,22 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                   type: "string",
                   title: "Browser Profile User Data Dir",
                   description:
-                    "Per-profile Chromium user data directory for existing-session attachment through Chrome DevTools MCP. Use this for Brave, Edge, Chromium, or non-default Chrome profiles when the built-in auto-connect path would pick the wrong browser data directory on the selected host or browser node.",
+                    "Per-profile Chromium user data directory for existing-session attachment through Chrome DevTools MCP. Use this for Brave, Edge, Chromium, or non-default Chrome profiles when the built-in auto-connect path would pick the wrong browser data directory on the selected host or browser node. Paths starting with ~ expand to the OS home directory.",
+                },
+                mcpCommand: {
+                  type: "string",
+                  title: "Browser Profile Chrome MCP Command",
+                  description:
+                    "Per-profile Chrome DevTools MCP command for existing-session attachment. Defaults to npx.",
+                },
+                mcpArgs: {
+                  type: "array",
+                  items: {
+                    type: "string",
+                  },
+                  title: "Browser Profile Chrome MCP Args",
+                  description:
+                    "Extra per-profile Chrome DevTools MCP arguments for existing-session attachment, such as --no-usage-statistics. Endpoint arguments here override the built-in auto-connect or browser URL selection.",
                 },
                 driver: {
                   anyOf: [
@@ -752,6 +840,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 },
                 executablePath: {
                   type: "string",
+                  title: "Browser Profile Executable Path",
+                  description:
+                    "Per-profile browser executable path for locally launched managed browser profiles. Overrides browser.executablePath and accepts paths starting with ~ for the OS home directory.",
                 },
                 attachOnly: {
                   type: "boolean",
@@ -808,7 +899,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
               },
               avatar: {
                 type: "string",
-                maxLength: 200,
+                maxLength: 2000000,
                 title: "Assistant Avatar",
                 description:
                   "Assistant avatar image source used in UI surfaces (URL, path, or data URI depending on runtime support). Use trusted assets and consistent branding dimensions for clean rendering.",
@@ -2817,6 +2908,14 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                               type: "string",
                               const: "image",
                             },
+                            {
+                              type: "string",
+                              const: "video",
+                            },
+                            {
+                              type: "string",
+                              const: "audio",
+                            },
                           ],
                         },
                       },
@@ -3129,6 +3228,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         description:
                           "Ordered fallback models (provider/model). Used when the primary model fails.",
                       },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -3155,6 +3259,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         },
                         title: "Image Model Fallbacks",
                         description: "Ordered fallback image models (provider/model).",
+                      },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
                       },
                     },
                     additionalProperties: false,
@@ -3183,6 +3292,14 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         title: "Image Generation Model Fallbacks",
                         description: "Ordered fallback image-generation models (provider/model).",
                       },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
+                        title: "Image Generation Timeout (ms)",
+                        description:
+                          "Default provider request timeout in milliseconds for image_generate calls. Per-call timeoutMs overrides this.",
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -3210,6 +3327,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         title: "Video Generation Model Fallbacks",
                         description: "Ordered fallback video-generation models (provider/model).",
                       },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
+                      },
                     },
                     additionalProperties: false,
                   },
@@ -3236,6 +3358,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         },
                         title: "Music Generation Model Fallbacks",
                         description: "Ordered fallback music-generation models (provider/model).",
+                      },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
                       },
                     },
                     additionalProperties: false,
@@ -3269,6 +3396,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         },
                         title: "PDF Model Fallbacks",
                         description: "Ordered fallback PDF models (provider/model).",
+                      },
+                      timeoutMs: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
                       },
                     },
                     additionalProperties: false,
@@ -3809,6 +3941,9 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                       },
                     },
                     systemPromptArg: {
+                      type: "string",
+                    },
+                    systemPromptFileArg: {
                       type: "string",
                     },
                     systemPromptFileConfigArg: {
@@ -4369,6 +4504,14 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                         type: "integer",
                         minimum: 0,
                         maximum: 9007199254740991,
+                      },
+                      embeddingBatchTimeoutSeconds: {
+                        type: "integer",
+                        exclusiveMinimum: 0,
+                        maximum: 9007199254740991,
+                        title: "Embedding Batch Timeout (s)",
+                        description:
+                          "Overrides the timeout for inline embedding batches during memory indexing. Leave unset to use provider defaults: 600 seconds for local/self-hosted providers such as local, Ollama, and LM Studio, and 120 seconds for hosted providers.",
                       },
                       sessions: {
                         type: "object",
@@ -5260,6 +5403,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                               type: "string",
                             },
                           },
+                          timeoutMs: {
+                            type: "integer",
+                            exclusiveMinimum: 0,
+                            maximum: 9007199254740991,
+                          },
                         },
                         additionalProperties: false,
                       },
@@ -5883,6 +6031,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                             type: "string",
                           },
                         },
+                        timeoutMs: {
+                          type: "integer",
+                          exclusiveMinimum: 0,
+                          maximum: 9007199254740991,
+                        },
                       },
                       additionalProperties: false,
                     },
@@ -6242,6 +6395,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                           minimum: 0,
                           maximum: 9007199254740991,
                         },
+                        embeddingBatchTimeoutSeconds: {
+                          type: "integer",
+                          exclusiveMinimum: 0,
+                          maximum: 9007199254740991,
+                        },
                         sessions: {
                           type: "object",
                           properties: {
@@ -6377,6 +6535,352 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                       type: "integer",
                       minimum: 0,
                       maximum: 9007199254740991,
+                    },
+                  },
+                  additionalProperties: false,
+                },
+                tts: {
+                  type: "object",
+                  properties: {
+                    auto: {
+                      type: "string",
+                      enum: ["off", "always", "inbound", "tagged"],
+                    },
+                    enabled: {
+                      type: "boolean",
+                    },
+                    mode: {
+                      type: "string",
+                      enum: ["final", "all"],
+                    },
+                    provider: {
+                      type: "string",
+                      minLength: 1,
+                    },
+                    persona: {
+                      type: "string",
+                    },
+                    personas: {
+                      type: "object",
+                      propertyNames: {
+                        type: "string",
+                      },
+                      additionalProperties: {
+                        type: "object",
+                        properties: {
+                          label: {
+                            type: "string",
+                          },
+                          description: {
+                            type: "string",
+                          },
+                          provider: {
+                            type: "string",
+                            minLength: 1,
+                          },
+                          fallbackPolicy: {
+                            anyOf: [
+                              {
+                                type: "string",
+                                const: "preserve-persona",
+                              },
+                              {
+                                type: "string",
+                                const: "provider-defaults",
+                              },
+                              {
+                                type: "string",
+                                const: "fail",
+                              },
+                            ],
+                          },
+                          prompt: {
+                            type: "object",
+                            properties: {
+                              profile: {
+                                type: "string",
+                              },
+                              scene: {
+                                type: "string",
+                              },
+                              sampleContext: {
+                                type: "string",
+                              },
+                              style: {
+                                type: "string",
+                              },
+                              accent: {
+                                type: "string",
+                              },
+                              pacing: {
+                                type: "string",
+                              },
+                              constraints: {
+                                type: "array",
+                                items: {
+                                  type: "string",
+                                },
+                              },
+                            },
+                            additionalProperties: false,
+                          },
+                          providers: {
+                            type: "object",
+                            propertyNames: {
+                              type: "string",
+                            },
+                            additionalProperties: {
+                              type: "object",
+                              properties: {
+                                apiKey: {
+                                  anyOf: [
+                                    {
+                                      type: "string",
+                                    },
+                                    {
+                                      oneOf: [
+                                        {
+                                          type: "object",
+                                          properties: {
+                                            source: {
+                                              type: "string",
+                                              const: "env",
+                                            },
+                                            provider: {
+                                              type: "string",
+                                              pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                            },
+                                            id: {
+                                              type: "string",
+                                              pattern: "^[A-Z][A-Z0-9_]{0,127}$",
+                                            },
+                                          },
+                                          required: ["source", "provider", "id"],
+                                          additionalProperties: false,
+                                        },
+                                        {
+                                          type: "object",
+                                          properties: {
+                                            source: {
+                                              type: "string",
+                                              const: "file",
+                                            },
+                                            provider: {
+                                              type: "string",
+                                              pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                            },
+                                            id: {
+                                              type: "string",
+                                            },
+                                          },
+                                          required: ["source", "provider", "id"],
+                                          additionalProperties: false,
+                                        },
+                                        {
+                                          type: "object",
+                                          properties: {
+                                            source: {
+                                              type: "string",
+                                              const: "exec",
+                                            },
+                                            provider: {
+                                              type: "string",
+                                              pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                            },
+                                            id: {
+                                              type: "string",
+                                            },
+                                          },
+                                          required: ["source", "provider", "id"],
+                                          additionalProperties: false,
+                                        },
+                                      ],
+                                    },
+                                  ],
+                                },
+                              },
+                              additionalProperties: {
+                                anyOf: [
+                                  {
+                                    type: "string",
+                                  },
+                                  {
+                                    type: "number",
+                                  },
+                                  {
+                                    type: "boolean",
+                                  },
+                                  {
+                                    type: "null",
+                                  },
+                                  {
+                                    type: "array",
+                                    items: {},
+                                  },
+                                  {
+                                    type: "object",
+                                    propertyNames: {
+                                      type: "string",
+                                    },
+                                    additionalProperties: {},
+                                  },
+                                ],
+                              },
+                            },
+                          },
+                        },
+                        additionalProperties: false,
+                      },
+                    },
+                    summaryModel: {
+                      type: "string",
+                    },
+                    modelOverrides: {
+                      type: "object",
+                      properties: {
+                        enabled: {
+                          type: "boolean",
+                        },
+                        allowText: {
+                          type: "boolean",
+                        },
+                        allowProvider: {
+                          type: "boolean",
+                        },
+                        allowVoice: {
+                          type: "boolean",
+                        },
+                        allowModelId: {
+                          type: "boolean",
+                        },
+                        allowVoiceSettings: {
+                          type: "boolean",
+                        },
+                        allowNormalization: {
+                          type: "boolean",
+                        },
+                        allowSeed: {
+                          type: "boolean",
+                        },
+                      },
+                      additionalProperties: false,
+                    },
+                    providers: {
+                      type: "object",
+                      propertyNames: {
+                        type: "string",
+                      },
+                      additionalProperties: {
+                        type: "object",
+                        properties: {
+                          apiKey: {
+                            anyOf: [
+                              {
+                                type: "string",
+                              },
+                              {
+                                oneOf: [
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "env",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                        pattern: "^[A-Z][A-Z0-9_]{0,127}$",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "file",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "exec",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                        },
+                        additionalProperties: {
+                          anyOf: [
+                            {
+                              type: "string",
+                            },
+                            {
+                              type: "number",
+                            },
+                            {
+                              type: "boolean",
+                            },
+                            {
+                              type: "null",
+                            },
+                            {
+                              type: "array",
+                              items: {},
+                            },
+                            {
+                              type: "object",
+                              propertyNames: {
+                                type: "string",
+                              },
+                              additionalProperties: {},
+                            },
+                          ],
+                        },
+                      },
+                    },
+                    prefsPath: {
+                      type: "string",
+                    },
+                    maxTextLength: {
+                      type: "integer",
+                      minimum: 1,
+                      maximum: 9007199254740991,
+                    },
+                    timeoutMs: {
+                      type: "integer",
+                      minimum: 1000,
+                      maximum: 120000,
                     },
                   },
                   additionalProperties: false,
@@ -17910,6 +18414,38 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                   description:
                     "Match rule object for deciding when a binding applies, including channel and optional account/peer constraints. Keep rules narrow to avoid accidental agent takeover across contexts.",
                 },
+                session: {
+                  type: "object",
+                  properties: {
+                    dmScope: {
+                      anyOf: [
+                        {
+                          type: "string",
+                          const: "main",
+                        },
+                        {
+                          type: "string",
+                          const: "per-peer",
+                        },
+                        {
+                          type: "string",
+                          const: "per-channel-peer",
+                        },
+                        {
+                          type: "string",
+                          const: "per-account-channel-peer",
+                        },
+                      ],
+                      title: "Binding Session DM Scope",
+                      description:
+                        'Optional DM session scope override for this route binding. For example, keep global session.dmScope="main" while using "per-account-channel-peer" for selected direct peers.',
+                    },
+                  },
+                  additionalProperties: false,
+                  title: "Binding Session",
+                  description:
+                    "Optional route session overrides for conversations matched by this binding. Use this when a narrow route should keep the same agent but isolate session continuity differently.",
+                },
               },
               required: ["agentId", "match"],
               additionalProperties: false,
@@ -18762,6 +19298,196 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
               provider: {
                 type: "string",
                 minLength: 1,
+              },
+              persona: {
+                type: "string",
+                title: "TTS Persona",
+                description:
+                  "Default TTS persona id. Local TTS persona preferences can override this per host.",
+              },
+              personas: {
+                type: "object",
+                propertyNames: {
+                  type: "string",
+                },
+                additionalProperties: {
+                  type: "object",
+                  properties: {
+                    label: {
+                      type: "string",
+                    },
+                    description: {
+                      type: "string",
+                    },
+                    provider: {
+                      type: "string",
+                      minLength: 1,
+                    },
+                    fallbackPolicy: {
+                      anyOf: [
+                        {
+                          type: "string",
+                          const: "preserve-persona",
+                        },
+                        {
+                          type: "string",
+                          const: "provider-defaults",
+                        },
+                        {
+                          type: "string",
+                          const: "fail",
+                        },
+                      ],
+                    },
+                    prompt: {
+                      type: "object",
+                      properties: {
+                        profile: {
+                          type: "string",
+                        },
+                        scene: {
+                          type: "string",
+                        },
+                        sampleContext: {
+                          type: "string",
+                        },
+                        style: {
+                          type: "string",
+                        },
+                        accent: {
+                          type: "string",
+                        },
+                        pacing: {
+                          type: "string",
+                        },
+                        constraints: {
+                          type: "array",
+                          items: {
+                            type: "string",
+                          },
+                        },
+                      },
+                      additionalProperties: false,
+                      title: "TTS Persona Prompt",
+                      description:
+                        "Provider-neutral persona prompt intent. Providers decide whether and how to map this into request instructions.",
+                    },
+                    providers: {
+                      type: "object",
+                      propertyNames: {
+                        type: "string",
+                      },
+                      additionalProperties: {
+                        type: "object",
+                        properties: {
+                          apiKey: {
+                            anyOf: [
+                              {
+                                type: "string",
+                              },
+                              {
+                                oneOf: [
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "env",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                        pattern: "^[A-Z][A-Z0-9_]{0,127}$",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "file",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                  {
+                                    type: "object",
+                                    properties: {
+                                      source: {
+                                        type: "string",
+                                        const: "exec",
+                                      },
+                                      provider: {
+                                        type: "string",
+                                        pattern: "^[a-z][a-z0-9_-]{0,63}$",
+                                      },
+                                      id: {
+                                        type: "string",
+                                      },
+                                    },
+                                    required: ["source", "provider", "id"],
+                                    additionalProperties: false,
+                                  },
+                                ],
+                              },
+                            ],
+                          },
+                        },
+                        additionalProperties: {
+                          anyOf: [
+                            {
+                              type: "string",
+                            },
+                            {
+                              type: "number",
+                            },
+                            {
+                              type: "boolean",
+                            },
+                            {
+                              type: "null",
+                            },
+                            {
+                              type: "array",
+                              items: {},
+                            },
+                            {
+                              type: "object",
+                              propertyNames: {
+                                type: "string",
+                              },
+                              additionalProperties: {},
+                            },
+                          ],
+                        },
+                      },
+                      title: "TTS Persona Provider Bindings",
+                      description:
+                        "Provider-specific TTS persona bindings keyed by speech provider id. These merge over messages.tts.providers for the active persona.",
+                    },
+                  },
+                  additionalProperties: false,
+                  title: "TTS Persona",
+                  description:
+                    "One TTS persona. Use provider-specific bindings for exact voices/models and prompt templates.",
+                },
+                title: "TTS Personas",
+                description:
+                  "Named TTS personas that define stable spoken identity plus provider-specific speech bindings.",
               },
               summaryModel: {
                 type: "string",
@@ -20956,6 +21682,12 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             description:
               "Provider-specific Talk settings keyed by provider id. During migration, prefer this over legacy talk.* keys.",
           },
+          speechLocale: {
+            type: "string",
+            title: "Talk Speech Locale",
+            description:
+              'BCP 47 locale id for Talk speech recognition on device nodes, for example "ru-RU". Leave unset to use each device default.',
+          },
           interruptOnSpeech: {
             type: "boolean",
             title: "Talk Interrupt on Speech",
@@ -21672,7 +22404,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                 maximum: 9007199254740991,
                 title: "Restart Deferral Timeout (ms)",
                 description:
-                  "Maximum time (ms) to wait for in-flight operations to complete before forcing a SIGUSR1 restart. Default: 300000 (5 minutes). Lower values risk aborting active subagent LLM calls.",
+                  "Optional maximum time (ms) to wait for in-flight operations before forcing a restart. Omit or set 0 to wait indefinitely with periodic still-pending warnings. Lower positive values risk aborting active subagent LLM calls.",
               },
             },
             additionalProperties: false,
@@ -22503,6 +23235,13 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             description:
               "Named MCP server definitions. OpenClaw stores them in its own config and runtime adapters decide which transports are supported at execution time.",
           },
+          sessionIdleTtlMs: {
+            type: "number",
+            minimum: 0,
+            title: "MCP Runtime Idle TTL",
+            description:
+              "Idle TTL in milliseconds for session-scoped bundled MCP runtimes. Defaults to 10 minutes; set 0 to disable idle eviction.",
+          },
         },
         additionalProperties: false,
         title: "MCP",
@@ -22797,7 +23536,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
                       type: "boolean",
                       title: "Allow Conversation Access Hooks",
                       description:
-                        "Controls whether this plugin may read raw conversation content from typed hooks such as `llm_input`, `llm_output`, and `agent_end`. Non-bundled plugins must opt in explicitly.",
+                        "Controls whether this plugin may read raw conversation content from typed hooks such as `llm_input`, `llm_output`, `before_agent_finalize`, and `agent_end`. Non-bundled plugins must opt in explicitly.",
                     },
                   },
                   additionalProperties: false,
@@ -22845,164 +23584,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
             title: "Plugin Entries",
             description:
               "Per-plugin settings keyed by plugin ID including enablement and plugin-specific runtime configuration payloads. Use this for scoped plugin tuning without changing global loader policy.",
-          },
-          installs: {
-            type: "object",
-            propertyNames: {
-              type: "string",
-            },
-            additionalProperties: {
-              type: "object",
-              properties: {
-                source: {
-                  anyOf: [
-                    {
-                      anyOf: [
-                        {
-                          type: "string",
-                          const: "npm",
-                        },
-                        {
-                          type: "string",
-                          const: "archive",
-                        },
-                        {
-                          type: "string",
-                          const: "path",
-                        },
-                        {
-                          type: "string",
-                          const: "clawhub",
-                        },
-                      ],
-                    },
-                    {
-                      type: "string",
-                      const: "marketplace",
-                    },
-                  ],
-                  title: "Plugin Install Source",
-                  description: 'Install source ("npm", "archive", or "path").',
-                },
-                spec: {
-                  type: "string",
-                  title: "Plugin Install Spec",
-                  description: "Original npm spec used for install (if source is npm).",
-                },
-                sourcePath: {
-                  type: "string",
-                  title: "Plugin Install Source Path",
-                  description: "Original archive/path used for install (if any).",
-                },
-                installPath: {
-                  type: "string",
-                  title: "Plugin Install Path",
-                  description: "Resolved install directory for the installed plugin bundle.",
-                },
-                version: {
-                  type: "string",
-                  title: "Plugin Install Version",
-                  description: "Version recorded at install time (if available).",
-                },
-                resolvedName: {
-                  type: "string",
-                  title: "Plugin Resolved Package Name",
-                  description: "Resolved npm package name from the fetched artifact.",
-                },
-                resolvedVersion: {
-                  type: "string",
-                  title: "Plugin Resolved Package Version",
-                  description:
-                    "Resolved npm package version from the fetched artifact (useful for non-pinned specs).",
-                },
-                resolvedSpec: {
-                  type: "string",
-                  title: "Plugin Resolved Package Spec",
-                  description:
-                    "Resolved exact npm spec (<name>@<version>) from the fetched artifact.",
-                },
-                integrity: {
-                  type: "string",
-                  title: "Plugin Resolved Integrity",
-                  description:
-                    "Resolved npm dist integrity hash for the fetched artifact (if reported by npm).",
-                },
-                shasum: {
-                  type: "string",
-                  title: "Plugin Resolved Shasum",
-                  description:
-                    "Resolved npm dist shasum for the fetched artifact (if reported by npm).",
-                },
-                resolvedAt: {
-                  type: "string",
-                  title: "Plugin Resolution Time",
-                  description:
-                    "ISO timestamp when npm package metadata was last resolved for this install record.",
-                },
-                installedAt: {
-                  type: "string",
-                  title: "Plugin Install Time",
-                  description: "ISO timestamp of last install/update.",
-                },
-                clawhubUrl: {
-                  type: "string",
-                },
-                clawhubPackage: {
-                  type: "string",
-                },
-                clawhubFamily: {
-                  anyOf: [
-                    {
-                      type: "string",
-                      const: "code-plugin",
-                    },
-                    {
-                      type: "string",
-                      const: "bundle-plugin",
-                    },
-                  ],
-                },
-                clawhubChannel: {
-                  anyOf: [
-                    {
-                      type: "string",
-                      const: "official",
-                    },
-                    {
-                      type: "string",
-                      const: "community",
-                    },
-                    {
-                      type: "string",
-                      const: "private",
-                    },
-                  ],
-                },
-                marketplaceName: {
-                  type: "string",
-                  title: "Plugin Marketplace Name",
-                  description:
-                    "Marketplace display name recorded for marketplace-backed plugin installs (if available).",
-                },
-                marketplaceSource: {
-                  type: "string",
-                  title: "Plugin Marketplace Source",
-                  description:
-                    "Original marketplace source used to resolve the install (for example a repo path or Git URL).",
-                },
-                marketplacePlugin: {
-                  type: "string",
-                  title: "Plugin Marketplace Plugin",
-                  description:
-                    "Plugin entry name inside the source marketplace, used for later updates.",
-                },
-              },
-              required: ["source"],
-              additionalProperties: false,
-            },
-            title: "Plugin Install Records",
-            description:
-              "CLI-managed install metadata (used by `openclaw plugins update` to locate install sources).",
           },
         },
         additionalProperties: false,
@@ -23432,6 +24013,21 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     "diagnostics.otel.endpoint": {
       label: "OpenTelemetry Endpoint",
       help: "Collector endpoint URL used for OpenTelemetry export transport, including scheme and port. Use a reachable, trusted collector endpoint and monitor ingestion errors after rollout.",
+      tags: ["observability"],
+    },
+    "diagnostics.otel.tracesEndpoint": {
+      label: "OpenTelemetry Traces Endpoint",
+      help: "Signal-specific OTLP/HTTP trace endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for trace export only.",
+      tags: ["observability"],
+    },
+    "diagnostics.otel.metricsEndpoint": {
+      label: "OpenTelemetry Metrics Endpoint",
+      help: "Signal-specific OTLP/HTTP metrics endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for metrics export only.",
+      tags: ["observability"],
+    },
+    "diagnostics.otel.logsEndpoint": {
+      label: "OpenTelemetry Logs Endpoint",
+      help: "Signal-specific OTLP/HTTP logs endpoint. When set, this overrides diagnostics.otel.endpoint and OTEL_EXPORTER_OTLP_ENDPOINT for log export only.",
       tags: ["observability"],
     },
     "diagnostics.otel.protocol": {
@@ -23926,6 +24522,21 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       help: "Remote CDP websocket URL used to attach to an externally managed browser instance. Use this for centralized browser hosts and keep URL access restricted to trusted network paths.",
       tags: ["advanced", "url-secret"],
     },
+    "browser.actionTimeoutMs": {
+      label: "Browser Action Timeout (ms)",
+      help: "Default timeout in milliseconds for browser act requests before the client gives up waiting. Raise this when healthy waits or UI interactions exceed the default request budget.",
+      tags: ["performance"],
+    },
+    "browser.localLaunchTimeoutMs": {
+      label: "Browser Local Launch Timeout (ms)",
+      help: "Timeout in milliseconds for locally launched managed Chrome to expose its CDP HTTP endpoint after process start. Raise this on slow single-board computers or older hosts.",
+      tags: ["performance"],
+    },
+    "browser.localCdpReadyTimeoutMs": {
+      label: "Browser Local CDP Ready Timeout (ms)",
+      help: "Timeout in milliseconds for a locally launched managed browser to finish CDP websocket readiness after the process is discovered. Raise this when Chrome starts but browser start still reports CDP not reachable.",
+      tags: ["performance"],
+    },
     "browser.color": {
       label: "Browser Accent Color",
       help: "Default accent color used for browser profile/UI cues where colored identity hints are displayed. Use consistent colors to help operators identify active browser profile context quickly.",
@@ -23933,7 +24544,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     },
     "browser.executablePath": {
       label: "Browser Executable Path",
-      help: "Explicit browser executable path when auto-discovery is insufficient for your host environment. Use absolute stable paths so launch behavior stays deterministic across restarts.",
+      help: "Explicit browser executable path when auto-discovery is insufficient for your host environment. Use an absolute stable path, or a path starting with ~ for your OS home directory, so launch behavior stays deterministic across restarts.",
       tags: ["storage"],
     },
     "browser.headless": {
@@ -23978,12 +24589,27 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     },
     "browser.profiles.*.userDataDir": {
       label: "Browser Profile User Data Dir",
-      help: "Per-profile Chromium user data directory for existing-session attachment through Chrome DevTools MCP. Use this for Brave, Edge, Chromium, or non-default Chrome profiles when the built-in auto-connect path would pick the wrong browser data directory on the selected host or browser node.",
+      help: "Per-profile Chromium user data directory for existing-session attachment through Chrome DevTools MCP. Use this for Brave, Edge, Chromium, or non-default Chrome profiles when the built-in auto-connect path would pick the wrong browser data directory on the selected host or browser node. Paths starting with ~ expand to the OS home directory.",
+      tags: ["storage"],
+    },
+    "browser.profiles.*.mcpCommand": {
+      label: "Browser Profile Chrome MCP Command",
+      help: "Per-profile Chrome DevTools MCP command for existing-session attachment. Defaults to npx.",
+      tags: ["storage"],
+    },
+    "browser.profiles.*.mcpArgs": {
+      label: "Browser Profile Chrome MCP Args",
+      help: "Extra per-profile Chrome DevTools MCP arguments for existing-session attachment, such as --no-usage-statistics. Endpoint arguments here override the built-in auto-connect or browser URL selection.",
       tags: ["storage"],
     },
     "browser.profiles.*.driver": {
       label: "Browser Profile Driver",
       help: 'Per-profile browser driver mode. Use "openclaw" (or legacy "clawd") for CDP-based profiles, or use "existing-session" for Chrome DevTools MCP attachment on the selected host or browser node.',
+      tags: ["storage"],
+    },
+    "browser.profiles.*.executablePath": {
+      label: "Browser Profile Executable Path",
+      help: "Per-profile browser executable path for locally launched managed browser profiles. Overrides browser.executablePath and accepts paths starting with ~ for the OS home directory.",
       tags: ["storage"],
     },
     "browser.profiles.*.headless": {
@@ -24889,7 +25515,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     },
     "gateway.reload.deferralTimeoutMs": {
       label: "Restart Deferral Timeout (ms)",
-      help: "Maximum time (ms) to wait for in-flight operations to complete before forcing a SIGUSR1 restart. Default: 300000 (5 minutes). Lower values risk aborting active subagent LLM calls.",
+      help: "Optional maximum time (ms) to wait for in-flight operations before forcing a restart. Omit or set 0 to wait indefinitely with periodic still-pending warnings. Lower positive values risk aborting active subagent LLM calls.",
       tags: ["network", "reliability", "performance"],
     },
     "gateway.nodes.browser.mode": {
@@ -24981,6 +25607,16 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "Binding Agent ID",
       help: "Target agent ID that receives traffic when the corresponding binding match rule is satisfied. Use valid configured agent IDs only so routing does not fail at runtime.",
       tags: ["advanced"],
+    },
+    "bindings[].session": {
+      label: "Binding Session",
+      help: "Optional route session overrides for conversations matched by this binding. Use this when a narrow route should keep the same agent but isolate session continuity differently.",
+      tags: ["storage"],
+    },
+    "bindings[].session.dmScope": {
+      label: "Binding Session DM Scope",
+      help: 'Optional DM session scope override for this route binding. For example, keep global session.dmScope="main" while using "per-account-channel-peer" for selected direct peers.',
+      tags: ["storage"],
     },
     "bindings[].match": {
       label: "Binding Match Rule",
@@ -25372,6 +26008,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "Memory Watch Debounce (ms)",
       help: "Debounce window in milliseconds for coalescing rapid file-watch events before reindex runs. Increase to reduce churn on frequently-written files, or lower for faster freshness.",
       tags: ["performance", "automation"],
+    },
+    "agents.defaults.memorySearch.sync.embeddingBatchTimeoutSeconds": {
+      label: "Embedding Batch Timeout (s)",
+      help: "Overrides the timeout for inline embedding batches during memory indexing. Leave unset to use provider defaults: 600 seconds for local/self-hosted providers such as local, Ollama, and LM Studio, and 120 seconds for hosted providers.",
+      tags: ["performance"],
     },
     "agents.defaults.memorySearch.sync.sessions.deltaBytes": {
       label: "Session Delta Bytes",
@@ -25984,6 +26625,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       help: "Ordered fallback image-generation models (provider/model).",
       tags: ["reliability", "media"],
     },
+    "agents.defaults.imageGenerationModel.timeoutMs": {
+      label: "Image Generation Timeout (ms)",
+      help: "Default provider request timeout in milliseconds for image_generate calls. Per-call timeoutMs overrides this.",
+      tags: ["performance", "media"],
+    },
     "agents.defaults.videoGenerationModel.primary": {
       label: "Video Generation Model",
       help: "Optional video-generation model (provider/model) used by the shared video generation capability.",
@@ -26342,6 +26988,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       label: "MCP Servers",
       help: "Named MCP server definitions. OpenClaw stores them in its own config and runtime adapters decide which transports are supported at execution time.",
       tags: ["advanced"],
+    },
+    "mcp.sessionIdleTtlMs": {
+      label: "MCP Runtime Idle TTL",
+      help: "Idle TTL in milliseconds for session-scoped bundled MCP runtimes. Defaults to 10 minutes; set 0 to disable idle eviction.",
+      tags: ["storage"],
     },
     "ui.seamColor": {
       label: "Accent Color",
@@ -27107,6 +27758,11 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       help: "Enables automatic live-reload behavior for canvas assets during development workflows. Keep disabled in production-like environments where deterministic output is preferred.",
       tags: ["reliability"],
     },
+    "talk.speechLocale": {
+      label: "Talk Speech Locale",
+      help: 'BCP 47 locale id for Talk speech recognition on device nodes, for example "ru-RU". Leave unset to use each device default.',
+      tags: ["media"],
+    },
     "talk.interruptOnSpeech": {
       label: "Talk Interrupt on Speech",
       help: "If true (default), stop assistant speech when the user starts speaking in Talk mode. Keep enabled for conversational turn-taking.",
@@ -27235,6 +27891,31 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     "messages.tts": {
       label: "Message Text-to-Speech",
       help: "Text-to-speech policy for reading agent replies aloud on supported voice or audio surfaces. Keep disabled unless voice playback is part of your operator/user workflow.",
+      tags: ["media"],
+    },
+    "messages.tts.persona": {
+      label: "TTS Persona",
+      help: "Default TTS persona id. Local TTS persona preferences can override this per host.",
+      tags: ["media"],
+    },
+    "messages.tts.personas": {
+      label: "TTS Personas",
+      help: "Named TTS personas that define stable spoken identity plus provider-specific speech bindings.",
+      tags: ["media"],
+    },
+    "messages.tts.personas.*": {
+      label: "TTS Persona",
+      help: "One TTS persona. Use provider-specific bindings for exact voices/models and prompt templates.",
+      tags: ["media"],
+    },
+    "messages.tts.personas.*.prompt": {
+      label: "TTS Persona Prompt",
+      help: "Provider-neutral persona prompt intent. Providers decide whether and how to map this into request instructions.",
+      tags: ["media"],
+    },
+    "messages.tts.personas.*.providers": {
+      label: "TTS Persona Provider Bindings",
+      help: "Provider-specific TTS persona bindings keyed by speech provider id. These merge over messages.tts.providers for the active persona.",
       tags: ["media"],
     },
     "messages.tts.providers": {
@@ -27412,7 +28093,7 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     },
     "plugins.entries.*.hooks.allowConversationAccess": {
       label: "Allow Conversation Access Hooks",
-      help: "Controls whether this plugin may read raw conversation content from typed hooks such as `llm_input`, `llm_output`, and `agent_end`. Non-bundled plugins must opt in explicitly.",
+      help: "Controls whether this plugin may read raw conversation content from typed hooks such as `llm_input`, `llm_output`, `before_agent_finalize`, and `agent_end`. Non-bundled plugins must opt in explicitly.",
       tags: ["access"],
     },
     "plugins.entries.*.hooks.allowPromptInjection": {
@@ -27450,86 +28131,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       help: "Plugin-defined configuration payload interpreted by that plugin's own schema and validation rules. Use only documented fields from the plugin to prevent ignored or invalid settings.",
       tags: ["advanced"],
     },
-    "plugins.installs": {
-      label: "Plugin Install Records",
-      help: "CLI-managed install metadata (used by `openclaw plugins update` to locate install sources).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.source": {
-      label: "Plugin Install Source",
-      help: 'Install source ("npm", "archive", or "path").',
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.spec": {
-      label: "Plugin Install Spec",
-      help: "Original npm spec used for install (if source is npm).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.sourcePath": {
-      label: "Plugin Install Source Path",
-      help: "Original archive/path used for install (if any).",
-      tags: ["storage"],
-    },
-    "plugins.installs.*.installPath": {
-      label: "Plugin Install Path",
-      help: "Resolved install directory for the installed plugin bundle.",
-      tags: ["storage"],
-    },
-    "plugins.installs.*.version": {
-      label: "Plugin Install Version",
-      help: "Version recorded at install time (if available).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.resolvedName": {
-      label: "Plugin Resolved Package Name",
-      help: "Resolved npm package name from the fetched artifact.",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.resolvedVersion": {
-      label: "Plugin Resolved Package Version",
-      help: "Resolved npm package version from the fetched artifact (useful for non-pinned specs).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.resolvedSpec": {
-      label: "Plugin Resolved Package Spec",
-      help: "Resolved exact npm spec (<name>@<version>) from the fetched artifact.",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.integrity": {
-      label: "Plugin Resolved Integrity",
-      help: "Resolved npm dist integrity hash for the fetched artifact (if reported by npm).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.shasum": {
-      label: "Plugin Resolved Shasum",
-      help: "Resolved npm dist shasum for the fetched artifact (if reported by npm).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.resolvedAt": {
-      label: "Plugin Resolution Time",
-      help: "ISO timestamp when npm package metadata was last resolved for this install record.",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.installedAt": {
-      label: "Plugin Install Time",
-      help: "ISO timestamp of last install/update.",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.marketplaceName": {
-      label: "Plugin Marketplace Name",
-      help: "Marketplace display name recorded for marketplace-backed plugin installs (if available).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.marketplaceSource": {
-      label: "Plugin Marketplace Source",
-      help: "Original marketplace source used to resolve the install (for example a repo path or Git URL).",
-      tags: ["advanced"],
-    },
-    "plugins.installs.*.marketplacePlugin": {
-      label: "Plugin Marketplace Plugin",
-      help: "Plugin entry name inside the source marketplace, used for later updates.",
-      tags: ["advanced"],
-    },
     "models.providers.*.headers.*": {
       sensitive: true,
       tags: ["security", "models"],
@@ -27553,6 +28154,14 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
     "agents.list[].memorySearch.remote.apiKey": {
       sensitive: true,
       tags: ["security", "auth"],
+    },
+    "agents.list[].tts.personas.*.providers.*.apiKey": {
+      sensitive: true,
+      tags: ["security", "auth", "media"],
+    },
+    "agents.list[].tts.providers.*.apiKey": {
+      sensitive: true,
+      tags: ["security", "auth", "media"],
     },
     "agents.list[].sandbox.ssh.identityData": {
       sensitive: true,
@@ -27874,6 +28483,10 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       sensitive: true,
       tags: ["security", "media", "tools"],
     },
+    "messages.tts.personas.*.providers.*.apiKey": {
+      sensitive: true,
+      tags: ["security", "auth", "media"],
+    },
     "mcp.servers.*.headers.*": {
       sensitive: true,
       tags: ["security"],
@@ -27934,6 +28547,6 @@ export const GENERATED_BASE_CONFIG_SCHEMA: BaseConfigSchemaResponse = {
       tags: ["advanced", "url-secret"],
     },
   },
-  version: "2026.4.24",
+  version: "2026.4.25",
   generatedAt: "2026-03-22T21:17:33.302Z",
 };

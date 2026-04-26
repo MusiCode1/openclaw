@@ -6,6 +6,7 @@ import { shouldSuppressBuiltInModel } from "../../agents/model-suppression.js";
 import { normalizeProviderId } from "../../agents/provider-id.js";
 import type { ModelDefinitionConfig, ModelProviderConfig } from "../../config/types.models.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { NormalizedModelCatalogRow } from "../../model-catalog/index.js";
 import type { ListRowModel } from "./list.model-row.js";
 import { toModelRow } from "./list.registry.js";
 import {
@@ -130,6 +131,18 @@ function toConfiguredProviderListModel(params: {
     baseUrl: params.model.baseUrl ?? params.providerConfig.baseUrl,
     input: resolveConfiguredModelInput({ model: params.model }),
     contextWindow: params.model.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
+    contextTokens: params.model.contextTokens,
+  };
+}
+
+function toManifestCatalogListModel(row: NormalizedModelCatalogRow): ListRowModel {
+  return {
+    provider: row.provider,
+    id: row.id,
+    name: row.name,
+    baseUrl: row.baseUrl,
+    input: [...row.input],
+    contextWindow: row.contextWindow ?? DEFAULT_CONTEXT_TOKENS,
   };
 }
 
@@ -143,6 +156,7 @@ function shouldListConfiguredProviderModel(params: {
 export function appendDiscoveredRows(params: {
   rows: ModelRow[];
   models: Model<Api>[];
+  modelRegistry?: ModelRegistry;
   context: RowBuilderContext;
 }): Set<string> {
   const seenKeys = new Set<string>();
@@ -156,7 +170,26 @@ export function appendDiscoveredRows(params: {
 
   for (const model of sorted) {
     const key = modelKey(model.provider, model.id);
-    appendVisibleRow({ rows: params.rows, model, key, context: params.context, seenKeys });
+    const resolvedModel = params.modelRegistry
+      ? resolveModelWithRegistry({
+          provider: model.provider,
+          modelId: model.id,
+          modelRegistry: params.modelRegistry,
+          cfg: params.context.cfg,
+          agentDir: params.context.agentDir,
+        })
+      : undefined;
+    const rowModel =
+      resolvedModel && modelKey(resolvedModel.provider, resolvedModel.id) === key
+        ? resolvedModel
+        : model;
+    appendVisibleRow({
+      rows: params.rows,
+      model: rowModel,
+      key,
+      context: params.context,
+      seenKeys,
+    });
   }
 
   return seenKeys;
@@ -190,6 +223,43 @@ export function appendConfiguredProviderRows(params: {
       });
     }
   }
+}
+
+export function appendModelCatalogRows(params: {
+  rows: ModelRow[];
+  context: RowBuilderContext;
+  seenKeys: Set<string>;
+  catalogRows: readonly NormalizedModelCatalogRow[];
+}): number {
+  let appended = 0;
+  for (const catalogRow of params.catalogRows) {
+    const key = modelKey(catalogRow.provider, catalogRow.id);
+    if (
+      appendVisibleRow({
+        rows: params.rows,
+        model: toManifestCatalogListModel(catalogRow),
+        key,
+        context: params.context,
+        seenKeys: params.seenKeys,
+        allowProviderAvailabilityFallback: true,
+      })
+    ) {
+      appended += 1;
+    }
+  }
+  return appended;
+}
+
+export function appendManifestCatalogRows(params: {
+  rows: ModelRow[];
+  context: RowBuilderContext;
+  seenKeys: Set<string>;
+  manifestRows: readonly NormalizedModelCatalogRow[];
+}): number {
+  return appendModelCatalogRows({
+    ...params,
+    catalogRows: params.manifestRows,
+  });
 }
 
 export async function appendCatalogSupplementRows(params: {

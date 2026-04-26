@@ -7,13 +7,18 @@ import {
   stripProviderPrefix,
 } from "../../execution-contract.js";
 import { isLikelyMutatingToolName } from "../../tool-mutation.js";
+import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
 import { assessLastAssistantMessage } from "../thinking.js";
 import type { EmbeddedRunLivenessState } from "../types.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 type ReplayMetadataAttempt = Pick<
   EmbeddedRunAttemptResult,
-  "toolMetas" | "didSendViaMessagingTool" | "successfulCronAdds"
+  | "toolMetas"
+  | "didSendViaMessagingTool"
+  | "messagingToolSentTexts"
+  | "messagingToolSentMediaUrls"
+  | "successfulCronAdds"
 >;
 
 type IncompleteTurnAttempt = Pick<
@@ -24,6 +29,8 @@ type IncompleteTurnAttempt = Pick<
   | "yieldDetected"
   | "didSendDeterministicApprovalPrompt"
   | "didSendViaMessagingTool"
+  | "messagingToolSentTexts"
+  | "messagingToolSentMediaUrls"
   | "lastToolError"
   | "lastAssistant"
   | "replayMetadata"
@@ -155,12 +162,31 @@ export type PlanningOnlyPlanDetails = {
   steps: string[];
 };
 
+function hasStringEntry(values: readonly unknown[] | undefined): boolean {
+  return (
+    Array.isArray(values) &&
+    values.some((value) => typeof value === "string" && value.trim().length > 0)
+  );
+}
+
+export function hasCommittedUserVisibleToolDelivery(
+  attempt: Pick<EmbeddedRunAttemptResult, "messagingToolSentTexts" | "messagingToolSentMediaUrls">,
+): boolean {
+  return (
+    hasStringEntry(attempt.messagingToolSentTexts) ||
+    hasStringEntry(attempt.messagingToolSentMediaUrls)
+  );
+}
+
 export function buildAttemptReplayMetadata(
   params: ReplayMetadataAttempt,
 ): EmbeddedRunAttemptResult["replayMetadata"] {
   const hadMutatingTools = params.toolMetas.some((t) => isLikelyMutatingToolName(t.toolName));
   const hadPotentialSideEffects =
-    hadMutatingTools || params.didSendViaMessagingTool || (params.successfulCronAdds ?? 0) > 0;
+    hadMutatingTools ||
+    params.didSendViaMessagingTool ||
+    hasCommittedUserVisibleToolDelivery(params) ||
+    (params.successfulCronAdds ?? 0) > 0;
   return {
     hadPotentialSideEffects,
     replaySafe: !hadPotentialSideEffects,
@@ -189,21 +215,11 @@ export function resolveIncompleteTurnPayloadText(params: {
     return null;
   }
 
-  const stopReason = params.attempt.lastAssistant?.stopReason;
-  // If the assistant already delivered user-visible content via a messaging
-  // tool during this turn and did not end in a hard error/interrupted tool-use
-  // state, do not surface an incomplete-turn warning. The user has received the
-  // reply; a follow-up "couldn't generate a response" bubble is a false positive.
-  // Provider-side failures and interrupted tool-use still fall through to the
-  // normal incomplete-turn paths below; tool-error cases are already handled by
-  // the lastToolError early return above.
-  if (
-    params.attempt.didSendViaMessagingTool &&
-    stopReason !== "error" &&
-    stopReason !== "toolUse"
-  ) {
+  if (hasCommittedUserVisibleToolDelivery(params.attempt)) {
     return null;
   }
+
+  const stopReason = params.attempt.lastAssistant?.stopReason;
   const incompleteTerminalAssistant = isIncompleteTerminalAssistantTurn({
     hasAssistantVisibleText: params.payloadCount > 0,
     lastAssistant: params.attempt.lastAssistant,
@@ -313,6 +329,37 @@ function isEmptyResponseAssistantTurn(params: {
   return true;
 }
 
+function isNonVisibleAssistantTurnEligibleForSilentReply(params: {
+  payloadCount: number;
+  attempt: Pick<
+    IncompleteTurnAttempt,
+    "assistantTexts" | "currentAttemptAssistant" | "lastAssistant"
+  >;
+}): boolean {
+  if (isEmptyResponseAssistantTurn(params)) {
+    return true;
+  }
+  if (params.payloadCount !== 0) {
+    return false;
+  }
+  if (params.attempt.assistantTexts.join("\n\n").trim().length > 0) {
+    return false;
+  }
+  const assistant = params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant;
+  if (!assistant || assistant.stopReason === "error") {
+    return false;
+  }
+  if (
+    isIncompleteTerminalAssistantTurn({
+      hasAssistantVisibleText: false,
+      lastAssistant: assistant,
+    })
+  ) {
+    return false;
+  }
+  return isReasoningOnlyAssistantTurn(assistant);
+}
+
 function shouldSkipPlanningOnlyRetry(params: {
   aborted: boolean;
   timedOut: boolean;
@@ -327,6 +374,25 @@ function shouldSkipPlanningOnlyRetry(params: {
     params.attempt.lastToolError ||
     params.attempt.replayMetadata.hadPotentialSideEffects,
   );
+}
+
+export function shouldTreatEmptyAssistantReplyAsSilent(params: {
+  allowEmptyAssistantReplyAsSilent?: boolean;
+  payloadCount: number;
+  aborted: boolean;
+  timedOut: boolean;
+  attempt: IncompleteTurnAttempt;
+}): boolean {
+  if (!params.allowEmptyAssistantReplyAsSilent || shouldSkipPlanningOnlyRetry(params)) {
+    return false;
+  }
+  if (hasCommittedUserVisibleToolDelivery(params.attempt)) {
+    return false;
+  }
+  return isNonVisibleAssistantTurnEligibleForSilentReply({
+    payloadCount: params.payloadCount,
+    attempt: params.attempt,
+  });
 }
 
 export function resolveReasoningOnlyRetryInstruction(params: {
@@ -379,16 +445,6 @@ export function resolveEmptyResponseRetryInstruction(params: {
   }
 
   if (
-    !shouldApplyPlanningOnlyRetryGuard({
-      provider: params.provider,
-      modelId: params.modelId,
-      executionContract: params.executionContract,
-    })
-  ) {
-    return null;
-  }
-
-  if (
     !isEmptyResponseAssistantTurn({
       payloadCount: params.payloadCount,
       attempt: params.attempt,
@@ -397,7 +453,20 @@ export function resolveEmptyResponseRetryInstruction(params: {
     return null;
   }
 
-  return EMPTY_RESPONSE_RETRY_INSTRUCTION;
+  if (
+    shouldApplyPlanningOnlyRetryGuard({
+      provider: params.provider,
+      modelId: params.modelId,
+      executionContract: params.executionContract,
+    }) ||
+    isZeroUsageEmptyStopAssistantTurn(
+      params.attempt.currentAttemptAssistant ?? params.attempt.lastAssistant ?? null,
+    )
+  ) {
+    return EMPTY_RESPONSE_RETRY_INSTRUCTION;
+  }
+
+  return null;
 }
 
 function shouldApplyPlanningOnlyRetryGuard(params: {
