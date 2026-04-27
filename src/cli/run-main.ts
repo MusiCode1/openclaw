@@ -69,9 +69,13 @@ export function shouldEnsureCliPath(argv: string[]): boolean {
 }
 
 export function shouldUseRootHelpFastPath(argv: string[]): boolean {
+  const invocation = resolveCliArgvInvocation(argv);
   return (
     process.env.OPENCLAW_DISABLE_CLI_STARTUP_HELP_FAST_PATH !== "1" &&
-    resolveCliArgvInvocation(argv).isRootHelpInvocation
+    (invocation.isRootHelpInvocation ||
+      (invocation.commandPath.length === 1 &&
+        invocation.commandPath[0] === "help" &&
+        invocation.hasHelpOrVersion))
   );
 }
 
@@ -309,7 +313,7 @@ export async function runCli(argv: string[] = process.argv) {
       const [
         { buildProgram },
         { runFatalErrorHooks },
-        { installUnhandledRejectionHandler },
+        { installUnhandledRejectionHandler, isUncaughtExceptionHandled },
         { restoreTerminalState },
       ] = await Promise.all([
         import("./program.js"),
@@ -324,6 +328,9 @@ export async function runCli(argv: string[] = process.argv) {
       installUnhandledRejectionHandler();
 
       process.on("uncaughtException", (error) => {
+        if (isUncaughtExceptionHandled(error)) {
+          return;
+        }
         console.error("[openclaw] Uncaught exception:", formatUncaughtError(error));
         for (const message of runFatalErrorHooks({ reason: "uncaught_exception", error })) {
           console.error("[openclaw]", message);
