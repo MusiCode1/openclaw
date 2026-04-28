@@ -296,6 +296,54 @@ describe("buildReplyPayloads media filter integration", () => {
     expect(replyPayloads).toHaveLength(0);
   });
 
+  it("keeps unsent final media after block pipeline streamed the text", async () => {
+    const pipeline: Parameters<typeof buildReplyPayloads>[0]["blockReplyPipeline"] = {
+      didStream: () => true,
+      isAborted: () => false,
+      hasSentPayload: (payload) => payload.text === "response" && !payload.mediaUrl,
+      enqueue: () => {},
+      flush: async () => {},
+      stop: () => {},
+      hasBuffered: () => false,
+      getSentMediaUrls: () => [],
+    };
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      blockReplyPipeline: pipeline,
+      payloads: [{ text: "response", mediaUrl: "/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(1);
+    expect(replyPayloads[0]).toMatchObject({
+      mediaUrl: "/tmp/generated.png",
+      text: undefined,
+    });
+  });
+
+  it("drops already-sent final media after block pipeline streamed successfully", async () => {
+    const pipeline: Parameters<typeof buildReplyPayloads>[0]["blockReplyPipeline"] = {
+      didStream: () => true,
+      isAborted: () => false,
+      hasSentPayload: (payload) => payload.text === "response" && !payload.mediaUrl,
+      enqueue: () => {},
+      flush: async () => {},
+      stop: () => {},
+      hasBuffered: () => false,
+      getSentMediaUrls: () => ["/tmp/generated.png"],
+    };
+
+    const { replyPayloads } = await buildReplyPayloads({
+      ...baseParams,
+      blockStreamingEnabled: true,
+      blockReplyPipeline: pipeline,
+      payloads: [{ text: "response", mediaUrl: "/tmp/generated.png" }],
+    });
+
+    expect(replyPayloads).toHaveLength(0);
+  });
+
   it("preserves post-stream error payloads when block pipeline streamed successfully", async () => {
     const pipeline: Parameters<typeof buildReplyPayloads>[0]["blockReplyPipeline"] = {
       didStream: () => true,
@@ -350,6 +398,7 @@ describe("buildReplyPayloads media filter integration", () => {
   it("extracts markdown image replies into final payload media urls", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
+      extractMarkdownImages: true,
       payloads: [{ text: "Here you go\n\n![chart](https://example.com/chart.png)" }],
     });
 
@@ -364,6 +413,7 @@ describe("buildReplyPayloads media filter integration", () => {
   it("preserves inline caption text when lifting markdown image replies into media", async () => {
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
+      extractMarkdownImages: true,
       payloads: [{ text: 'Look ![chart](https://example.com/chart.png "Quarterly chart") now' }],
     });
 
@@ -379,6 +429,7 @@ describe("buildReplyPayloads media filter integration", () => {
     const text = "Look ![chart](file:///etc/passwd) now";
     const { replyPayloads } = await buildReplyPayloads({
       ...baseParams,
+      extractMarkdownImages: true,
       payloads: [{ text }],
     });
 

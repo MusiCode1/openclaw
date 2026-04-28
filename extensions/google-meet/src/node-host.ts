@@ -15,6 +15,7 @@ type NodeBridgeSession = {
   id: string;
   url?: string;
   mode?: string;
+  outputCommand: { command: string; args: string[] };
   input?: ChildProcess;
   output?: ChildProcess;
   chunks: Buffer[];
@@ -23,9 +24,11 @@ type NodeBridgeSession = {
   createdAt: string;
   lastInputAt?: string;
   lastOutputAt?: string;
+  lastClearAt?: string;
   lastInputBytes: number;
   lastOutputBytes: number;
   closedAt?: string;
+  clearCount: number;
 };
 
 const sessions = new Map<string, NodeBridgeSession>();
@@ -100,14 +103,33 @@ function wake(session: NodeBridgeSession) {
 }
 
 function stopSession(session: NodeBridgeSession) {
-  if (session.closed) {
-    return;
-  }
+  const wasClosed = session.closed;
   session.closed = true;
-  session.closedAt = new Date().toISOString();
+  session.closedAt ??= new Date().toISOString();
   terminateChild(session.input);
   terminateChild(session.output);
-  wake(session);
+  if (!wasClosed) {
+    wake(session);
+  }
+}
+
+function attachOutputProcessHandlers(session: NodeBridgeSession, outputProcess: ChildProcess) {
+  outputProcess.on("exit", () => {
+    if (session.output === outputProcess) {
+      stopSession(session);
+    }
+  });
+  outputProcess.on("error", () => {
+    if (session.output === outputProcess) {
+      stopSession(session);
+    }
+  });
+}
+
+function startOutputProcess(command: { command: string; args: string[] }) {
+  return spawn(command.command, command.args, {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
 }
 
 function startCommandPair(params: {
@@ -122,16 +144,16 @@ function startCommandPair(params: {
     id: `meet_node_${randomUUID()}`,
     url: params.url,
     mode: params.mode,
+    outputCommand: output,
     chunks: [],
     waiters: [],
     closed: false,
     createdAt: new Date().toISOString(),
     lastInputBytes: 0,
     lastOutputBytes: 0,
+    clearCount: 0,
   };
-  const outputProcess = spawn(output.command, output.args, {
-    stdio: ["pipe", "ignore", "pipe"],
-  });
+  const outputProcess = startOutputProcess(output);
   const inputProcess = spawn(input.command, input.args, {
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -148,9 +170,8 @@ function startCommandPair(params: {
     wake(session);
   });
   inputProcess.on("exit", () => stopSession(session));
-  outputProcess.on("exit", () => stopSession(session));
+  attachOutputProcessHandlers(session, outputProcess);
   inputProcess.on("error", () => stopSession(session));
-  outputProcess.on("error", () => stopSession(session));
   sessions.set(session.id, session);
   return session;
 }
@@ -224,48 +245,71 @@ function pushAudio(params: Record<string, unknown>) {
   return { bridgeId, ok: true };
 }
 
+function clearAudio(params: Record<string, unknown>) {
+  const bridgeId = readString(params.bridgeId);
+  if (!bridgeId) {
+    throw new Error("bridgeId required");
+  }
+  const session = sessions.get(bridgeId);
+  if (!session || session.closed) {
+    throw new Error(`bridge is not open: ${bridgeId}`);
+  }
+  const previousOutput = session.output;
+  const outputProcess = startOutputProcess(session.outputCommand);
+  session.output = outputProcess;
+  attachOutputProcessHandlers(session, outputProcess);
+  session.clearCount += 1;
+  session.lastClearAt = new Date().toISOString();
+  terminateChild(previousOutput);
+  return { bridgeId, ok: true, clearCount: session.clearCount };
+}
+
 function startChrome(params: Record<string, unknown>) {
   const url = readString(params.url);
   if (!url) {
     throw new Error("url required");
   }
   const timeoutMs = readNumber(params.joinTimeoutMs, 30_000);
-  assertBlackHoleAvailable(Math.min(timeoutMs, 10_000));
-
-  const healthCommand = readStringArray(params.audioBridgeHealthCommand);
-  if (healthCommand) {
-    const health = runCommandWithTimeout(healthCommand, timeoutMs);
-    if (health.code !== 0) {
-      throw new Error(
-        `Chrome audio bridge health check failed: ${health.stderr || health.stdout || health.code}`,
-      );
-    }
-  }
+  const mode = readString(params.mode);
 
   let bridgeId: string | undefined;
   let audioBridge: { type: "external-command" | "node-command-pair" } | undefined;
-  const bridgeCommand = readStringArray(params.audioBridgeCommand);
-  if (bridgeCommand) {
-    const bridge = runCommandWithTimeout(bridgeCommand, timeoutMs);
-    if (bridge.code !== 0) {
-      throw new Error(
-        `failed to start Chrome audio bridge: ${bridge.stderr || bridge.stdout || bridge.code}`,
-      );
+  if (mode === "realtime") {
+    assertBlackHoleAvailable(Math.min(timeoutMs, 10_000));
+
+    const healthCommand = readStringArray(params.audioBridgeHealthCommand);
+    if (healthCommand) {
+      const health = runCommandWithTimeout(healthCommand, timeoutMs);
+      if (health.code !== 0) {
+        throw new Error(
+          `Chrome audio bridge health check failed: ${health.stderr || health.stdout || health.code}`,
+        );
+      }
     }
-    audioBridge = { type: "external-command" };
-  } else if (params.mode === "realtime") {
-    const session = startCommandPair({
-      inputCommand: readStringArray(params.audioInputCommand) ?? [
-        ...DEFAULT_GOOGLE_MEET_AUDIO_INPUT_COMMAND,
-      ],
-      outputCommand: readStringArray(params.audioOutputCommand) ?? [
-        ...DEFAULT_GOOGLE_MEET_AUDIO_OUTPUT_COMMAND,
-      ],
-      url,
-      mode: readString(params.mode),
-    });
-    bridgeId = session.id;
-    audioBridge = { type: "node-command-pair" };
+
+    const bridgeCommand = readStringArray(params.audioBridgeCommand);
+    if (bridgeCommand) {
+      const bridge = runCommandWithTimeout(bridgeCommand, timeoutMs);
+      if (bridge.code !== 0) {
+        throw new Error(
+          `failed to start Chrome audio bridge: ${bridge.stderr || bridge.stdout || bridge.code}`,
+        );
+      }
+      audioBridge = { type: "external-command" };
+    } else {
+      const session = startCommandPair({
+        inputCommand: readStringArray(params.audioInputCommand) ?? [
+          ...DEFAULT_GOOGLE_MEET_AUDIO_INPUT_COMMAND,
+        ],
+        outputCommand: readStringArray(params.audioOutputCommand) ?? [
+          ...DEFAULT_GOOGLE_MEET_AUDIO_OUTPUT_COMMAND,
+        ],
+        url,
+        mode,
+      });
+      bridgeId = session.id;
+      audioBridge = { type: "node-command-pair" };
+    }
   }
 
   if (params.launch !== false) {
@@ -317,8 +361,11 @@ function bridgeStatus(params: Record<string, unknown>) {
           createdAt: session.createdAt,
           lastInputAt: session.lastInputAt,
           lastOutputAt: session.lastOutputAt,
+          lastClearAt: session.lastClearAt,
           lastInputBytes: session.lastInputBytes,
           lastOutputBytes: session.lastOutputBytes,
+          clearCount: session.clearCount,
+          queuedInputChunks: session.chunks.length,
         }
       : bridgeId
         ? { bridgeId, closed: true }
@@ -437,6 +484,9 @@ export async function handleGoogleMeetNodeHostCommand(paramsJSON?: string | null
       break;
     case "pushAudio":
       result = pushAudio(params);
+      break;
+    case "clearAudio":
+      result = clearAudio(params);
       break;
     case "stop":
       result = stopChrome(params);

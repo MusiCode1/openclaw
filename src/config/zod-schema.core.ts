@@ -195,6 +195,8 @@ export const ModelCompatSchema = z
     supportsStrictMode: z.boolean().optional(),
     requiresStringContent: z.boolean().optional(),
     visibleReasoningDetailTypes: z.array(z.string().min(1)).optional(),
+    supportedReasoningEfforts: z.array(z.string().min(1)).optional(),
+    reasoningEffortMap: z.record(z.string().min(1), z.string().min(1)).optional(),
     maxTokensField: z
       .union([z.literal("max_completion_tokens"), z.literal("max_tokens")])
       .optional(),
@@ -204,8 +206,6 @@ export const ModelCompatSchema = z
         z.literal("openrouter"),
         z.literal("deepseek"),
         z.literal("zai"),
-        z.literal("qwen"),
-        z.literal("qwen-chat-template"),
       ])
       .optional(),
     requiresToolResultName: z.boolean().optional(),
@@ -393,6 +393,7 @@ export const GroupChatSchema = z
   .object({
     mentionPatterns: z.array(z.string()).optional(),
     historyLimit: z.number().int().positive().optional(),
+    visibleReplies: z.enum(["automatic", "message_tool"]).optional(),
   })
   .strict()
   .optional();

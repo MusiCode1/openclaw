@@ -24,7 +24,6 @@ import {
   shouldApplyStartupContext,
 } from "../../auto-reply/reply/startup-context.js";
 import { agentCommandFromIngress } from "../../commands/agent.js";
-import { loadConfig } from "../../config/config.js";
 import {
   evaluateSessionFreshness,
   mergeSessionEntry,
@@ -76,11 +75,16 @@ import {
   INTERNAL_MESSAGE_CHANNEL,
   isDeliverableMessageChannel,
   isGatewayMessageChannel,
+  isInternalNonDeliveryChannel,
   normalizeMessageChannel,
 } from "../../utils/message-channel.js";
 import { resolveAssistantIdentity } from "../assistant-identity.js";
 import { registerChatAbortController, resolveAgentRunExpiresAtMs } from "../chat-abort.js";
-import { MediaOffloadError, parseMessageWithAttachments } from "../chat-attachments.js";
+import {
+  MediaOffloadError,
+  parseMessageWithAttachments,
+  resolveChatAttachmentMaxBytes,
+} from "../chat-attachments.js";
 import { resolveAssistantAvatarUrl } from "../control-ui-shared.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { GATEWAY_CLIENT_CAPS, hasGatewayClientCap } from "../protocol/client-info.js";
@@ -429,6 +433,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       promptMode?: "full" | "minimal" | "none";
       bootstrapContextMode?: "full" | "lightweight";
       bootstrapContextRunKind?: "default" | "heartbeat" | "cron";
+      acpTurnSource?: "manual_spawn";
       internalEvents?: AgentInternalEvent[];
       idempotencyKey: string;
       timeout?: number;
@@ -456,7 +461,7 @@ export const agentHandlers: GatewayRequestHandlers = {
     }
     const providerOverride = allowModelOverride ? request.provider : undefined;
     const modelOverride = allowModelOverride ? request.model : undefined;
-    const cfg = loadConfig();
+    const cfg = context.getRuntimeConfig();
     const idem = request.idempotencyKey;
     const normalizedSpawned = normalizeSpawnedRunMetadata({
       groupId: request.groupId,
@@ -498,7 +503,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
       const effectiveProvider = providerOverride || baseProvider;
       const effectiveModel = modelOverride || baseModel;
-      const supportsImages = await resolveGatewayModelSupportsImages({
+      const supportsInlineImages = await resolveGatewayModelSupportsImages({
         loadGatewayModelCatalog: context.loadGatewayModelCatalog,
         provider: effectiveProvider,
         model: effectiveModel,
@@ -506,9 +511,13 @@ export const agentHandlers: GatewayRequestHandlers = {
 
       try {
         const parsed = await parseMessageWithAttachments(message, normalizedAttachments, {
-          maxBytes: 5_000_000,
+          maxBytes: resolveChatAttachmentMaxBytes(cfg),
           log: context.logGateway,
-          supportsImages,
+          supportsInlineImages,
+          // agent.run does not yet wire a ctx.MediaPaths stage path, so reject
+          // non-image attachments explicitly (UnsupportedAttachmentError)
+          // instead of saving them where the agent cannot reach them.
+          acceptNonImage: false,
         });
         message = parsed.message.trim();
         images = parsed.images;
@@ -532,7 +541,10 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
 
-    const isKnownGatewayChannel = (value: string): boolean => isGatewayMessageChannel(value);
+    // Accept internal non-delivery sources (heartbeat, cron, webhook) as valid
+    // channel hints so subagent spawns from those parent runs are not rejected.
+    const isKnownGatewayChannel = (value: string): boolean =>
+      isGatewayMessageChannel(value) || isInternalNonDeliveryChannel(value);
     const channelHints = [request.channel, request.replyChannel]
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.trim())
@@ -806,6 +818,10 @@ export const agentHandlers: GatewayRequestHandlers = {
         request.bootstrapContextRunKind !== "heartbeat" &&
         !request.internalEvents?.length;
       const labelValue = normalizeOptionalString(request.label) || entry?.label;
+      const pluginOwnerId =
+        entry === undefined
+          ? normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId)
+          : normalizeOptionalString(entry.pluginOwnerId);
       const sessionAgent = resolveAgentIdFromSessionKey(canonicalKey);
       spawnedByValue = canonicalizeSpawnedByForAgent(cfg, sessionAgent, entry?.spawnedBy);
       let inheritedGroup:
@@ -882,6 +898,7 @@ export const agentHandlers: GatewayRequestHandlers = {
         groupId: resolvedGroupId ?? entry?.groupId,
         groupChannel: resolvedGroupChannel ?? entry?.groupChannel,
         space: resolvedGroupSpace ?? entry?.space,
+        ...(pluginOwnerId ? { pluginOwnerId } : {}),
         cliSessionIds: entry?.cliSessionIds,
         cliSessionBindings: entry?.cliSessionBindings,
         claudeCliSessionId: entry?.claudeCliSessionId,
@@ -1171,12 +1188,12 @@ export const agentHandlers: GatewayRequestHandlers = {
           messageChannel: originMessageChannel,
           runId,
           lane: request.lane,
-          cleanupBundleMcpOnRunEnd: request.cleanupBundleMcpOnRunEnd === true,
           modelRun: request.modelRun === true,
           promptMode: request.promptMode,
           extraSystemPrompt: request.extraSystemPrompt,
           bootstrapContextMode: request.bootstrapContextMode,
           bootstrapContextRunKind: request.bootstrapContextRunKind,
+          acpTurnSource: request.acpTurnSource,
           internalEvents: request.internalEvents,
           inputProvenance,
           abortSignal: activeRunAbort.controller.signal,
@@ -1201,7 +1218,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
     }
   },
-  "agent.identity.get": ({ params, respond }) => {
+  "agent.identity.get": ({ params, respond, context }) => {
     if (!validateAgentIdentityParams(params)) {
       respond(
         false,
@@ -1245,7 +1262,7 @@ export const agentHandlers: GatewayRequestHandlers = {
       }
       agentId = resolved;
     }
-    const cfg = loadConfig();
+    const cfg = context.getRuntimeConfig();
     const identity = resolveAssistantIdentity({ cfg, agentId });
     const avatarValue =
       resolveAssistantAvatarUrl({

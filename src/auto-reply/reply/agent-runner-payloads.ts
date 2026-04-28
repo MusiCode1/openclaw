@@ -107,6 +107,7 @@ export async function buildReplyPayloads(params: {
   originatingChannel?: OriginatingChannelType;
   originatingTo?: string;
   accountId?: string;
+  extractMarkdownImages?: boolean;
   normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
 }): Promise<{ replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean }> {
   let didLogHeartbeatStrip = params.didLogHeartbeatStrip;
@@ -148,6 +149,7 @@ export async function buildReplyPayloads(params: {
           currentMessageId: params.currentMessageId,
           silentToken: SILENT_REPLY_TOKEN,
           parseMode: "always",
+          extractMarkdownImages: params.extractMarkdownImages,
         });
         const mediaNormalizedPayload = await normalizeReplyPayloadMedia({
           payload: parsed.payload,
@@ -222,8 +224,34 @@ export async function buildReplyPayloads(params: {
     : mediaFilteredPayloads;
   const isDirectlySentBlockPayload = (payload: ReplyPayload) =>
     Boolean(params.directlySentBlockKeys?.has(createBlockReplyContentKey(payload)));
+  const preserveUnsentMediaAfterBlockStream = (payload: ReplyPayload): ReplyPayload | null => {
+    if (payload.isError) {
+      return payload;
+    }
+    const reply = resolveSendableOutboundReplyParts(payload);
+    if (!reply.hasMedia) {
+      return null;
+    }
+    if (!reply.trimmedText) {
+      return payload;
+    }
+    const textOnlyPayload = {
+      ...payload,
+      mediaUrl: undefined,
+      mediaUrls: undefined,
+      audioAsVoice: undefined,
+    };
+    if (!params.blockReplyPipeline?.hasSentPayload(textOnlyPayload)) {
+      return payload;
+    }
+    return {
+      ...payload,
+      text: undefined,
+      audioAsVoice: payload.audioAsVoice || undefined,
+    };
+  };
   const contentSuppressedPayloads = shouldDropFinalPayloads
-    ? dedupedPayloads.filter((payload) => payload.isError)
+    ? dedupedPayloads.flatMap((payload) => preserveUnsentMediaAfterBlockStream(payload) ?? [])
     : params.blockStreamingEnabled
       ? dedupedPayloads.filter(
           (payload) =>
@@ -250,7 +278,9 @@ export async function buildReplyPayloads(params: {
           sentMediaUrls: blockSentMediaUrls,
         })
       : contentSuppressedPayloads;
-  const replyPayloads = suppressMessagingToolReplies ? [] : filteredPayloads;
+  const replyPayloads = suppressMessagingToolReplies
+    ? []
+    : filteredPayloads.filter(isRenderablePayload);
 
   return {
     replyPayloads,
