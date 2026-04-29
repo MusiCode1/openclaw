@@ -16,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   isBundledRuntimeDepsInstallStagePath,
+  LOCAL_BUILD_METADATA_DIST_PATHS,
   PACKAGE_DIST_INVENTORY_RELATIVE_PATH,
   writePackageDistInventory,
 } from "../src/infra/package-dist-inventory.ts";
@@ -68,6 +69,7 @@ const requiredPathGroups = [
   ...WORKSPACE_TEMPLATE_PACK_PATHS,
   "scripts/npm-runner.mjs",
   "scripts/preinstall-package-manager-warning.mjs",
+  "scripts/lib/package-dist-imports.mjs",
   "scripts/postinstall-bundled-plugins.mjs",
   "dist/plugin-sdk/compat.js",
   "dist/plugin-sdk/root-alias.cjs",
@@ -77,6 +79,7 @@ const requiredPathGroups = [
   "dist/control-ui/index.html",
 ];
 const forbiddenPrefixes = [
+  ...LOCAL_BUILD_METADATA_DIST_PATHS,
   "dist-runtime/",
   "dist/OpenClaw.app/",
   "dist/extensions/qa-channel/",
