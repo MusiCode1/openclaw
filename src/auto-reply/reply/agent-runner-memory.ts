@@ -21,10 +21,11 @@ import {
   updateSessionStoreEntry,
 } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { readSessionMessages } from "../../gateway/session-utils.fs.js";
+import { readSessionMessagesAsync } from "../../gateway/session-utils.fs.js";
 import { logVerbose } from "../../globals.js";
 import { registerAgentRunContext } from "../../infra/agent-events.js";
 import { resolveMemoryFlushPlan } from "../../plugins/memory-state.js";
+import { CommandLane } from "../../process/lanes.js";
 import { normalizeOptionalString } from "../../shared/string-coerce.js";
 import type { TemplateContext } from "../templating.js";
 import type { VerboseLevel } from "../thinking.js";
@@ -97,7 +98,7 @@ export function setAgentRunnerMemoryTestDeps(overrides?: Partial<typeof memoryDe
   });
 }
 
-export function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined {
+function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined {
   const trimmed = normalizeOptionalString(prompt);
   if (!trimmed) {
     return undefined;
@@ -110,7 +111,7 @@ export function estimatePromptTokensForMemoryFlush(prompt?: string): number | un
   return Math.ceil(tokens);
 }
 
-export function resolveEffectivePromptTokens(
+function resolveEffectivePromptTokens(
   basePromptTokens?: number,
   lastOutputTokens?: number,
   promptTokenEstimate?: number,
@@ -123,7 +124,7 @@ export function resolveEffectivePromptTokens(
   return base + output + estimate;
 }
 
-export function resolveMemoryFlushModelFallbackOptions(
+function resolveMemoryFlushModelFallbackOptions(
   run: FollowupRun["run"],
   model?: string,
   configOverride: FollowupRun["run"]["config"] = run.config,
@@ -340,21 +341,21 @@ async function readLastNonzeroUsageFromSessionLog(logPath: string) {
   }
 }
 
-function estimatePromptTokensFromSessionTranscript(params: {
+async function estimatePromptTokensFromSessionTranscript(params: {
   sessionId?: string;
   storePath?: string;
   sessionFile?: string;
-}): number | undefined {
+}): Promise<number | undefined> {
   const sessionId = normalizeOptionalString(params.sessionId);
   if (!sessionId) {
     return undefined;
   }
   try {
-    const messages = readSessionMessages(
+    const messages = (await readSessionMessagesAsync(
       sessionId,
       params.storePath,
       params.sessionFile,
-    ) as AgentMessage[];
+    )) as AgentMessage[];
     if (messages.length === 0) {
       return undefined;
     }
@@ -443,7 +444,7 @@ export async function runPreflightCompactionIfNeeded(params: {
   const transcriptPromptTokens =
     typeof freshPersistedTokens === "number"
       ? undefined
-      : estimatePromptTokensFromSessionTranscript({
+      : await estimatePromptTokensFromSessionTranscript({
           sessionId: entry.sessionId,
           storePath: params.storePath,
           sessionFile: entry.sessionFile ?? params.followupRun.run.sessionFile,
@@ -817,6 +818,8 @@ export async function runMemoryFlushIfNeeded(params: {
         params.cfg,
       ),
       runId: flushRunId,
+      sessionId: activeSessionEntry?.sessionId ?? params.followupRun.run.sessionId,
+      lane: CommandLane.Main,
       run: async (provider, model, runOptions) => {
         const { embeddedContext, senderContext, runBaseParams } = buildEmbeddedRunExecutionParams({
           run: params.followupRun.run,

@@ -7,6 +7,7 @@ import {
   resolveInstalledManifestRegistryIndexFingerprint,
 } from "./manifest-registry-installed.js";
 import type { PluginManifestRecord } from "./manifest-registry.js";
+import { resolvePluginControlPlaneFingerprint } from "./plugin-control-plane-context.js";
 import type {
   LoadPluginMetadataSnapshotParams,
   PluginMetadataSnapshot,
@@ -16,11 +17,22 @@ import { createPluginRegistryIdNormalizer } from "./plugin-registry-id-normalize
 import { loadPluginRegistrySnapshotWithMetadata } from "./plugin-registry-snapshot.js";
 export type {
   LoadPluginMetadataSnapshotParams,
+  PluginMetadataManifestView,
+  PluginMetadataRegistryView,
   PluginMetadataSnapshot,
   PluginMetadataSnapshotMetrics,
   PluginMetadataSnapshotOwnerMaps,
   PluginMetadataSnapshotRegistryDiagnostic,
 } from "./plugin-metadata-snapshot.types.js";
+
+function resolvePluginMetadataControlPlaneFingerprint(
+  params: Pick<LoadPluginMetadataSnapshotParams, "config" | "env" | "workspaceDir"> & {
+    index?: InstalledPluginIndex;
+    policyHash?: string;
+  },
+): string {
+  return resolvePluginControlPlaneFingerprint(params);
+}
 
 function indexesMatch(
   left: InstalledPluginIndex | undefined,
@@ -36,13 +48,27 @@ function indexesMatch(
 }
 
 export function isPluginMetadataSnapshotCompatible(params: {
-  snapshot: Pick<PluginMetadataSnapshot, "index" | "policyHash" | "workspaceDir">;
+  snapshot: Pick<
+    PluginMetadataSnapshot,
+    "configFingerprint" | "index" | "policyHash" | "workspaceDir"
+  >;
   config: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
   workspaceDir?: string;
   index?: InstalledPluginIndex;
 }): boolean {
+  const env = params.env ?? process.env;
   return (
     params.snapshot.policyHash === resolveInstalledPluginIndexPolicyHash(params.config) &&
+    (!params.snapshot.configFingerprint ||
+      params.snapshot.configFingerprint ===
+        resolvePluginMetadataControlPlaneFingerprint({
+          config: params.config,
+          env,
+          index: params.index ?? params.snapshot.index,
+          policyHash: params.snapshot.policyHash,
+          workspaceDir: params.workspaceDir,
+        })) &&
     (params.snapshot.workspaceDir ?? "") === (params.workspaceDir ?? "") &&
     indexesMatch(params.snapshot.index, params.index)
   );
@@ -63,7 +89,7 @@ function freezeOwnerMap(owners: Map<string, string[]>): ReadonlyMap<string, read
   );
 }
 
-export function buildPluginMetadataOwnerMaps(
+function buildPluginMetadataOwnerMaps(
   plugins: readonly PluginManifestRecord[],
 ): PluginMetadataSnapshotOwnerMaps {
   const channels = new Map<string, string[]>();
@@ -122,6 +148,12 @@ export function buildPluginMetadataOwnerMaps(
   };
 }
 
+export function listPluginOriginsFromMetadataSnapshot(
+  snapshot: Pick<PluginMetadataSnapshot, "plugins">,
+): ReadonlyMap<string, PluginManifestRecord["origin"]> {
+  return new Map(snapshot.plugins.map((record) => [record.id, record.origin]));
+}
+
 export function loadPluginMetadataSnapshot(
   params: LoadPluginMetadataSnapshotParams,
 ): PluginMetadataSnapshot {
@@ -171,6 +203,13 @@ function loadPluginMetadataSnapshotImpl(
 
   return {
     policyHash: index.policyHash,
+    configFingerprint: resolvePluginMetadataControlPlaneFingerprint({
+      config: params.config,
+      env: params.env,
+      index,
+      policyHash: index.policyHash,
+      workspaceDir: params.workspaceDir,
+    }),
     ...(params.workspaceDir ? { workspaceDir: params.workspaceDir } : {}),
     index,
     registryDiagnostics: registryResult.diagnostics,
