@@ -6,7 +6,7 @@ import {
   loadPluginManifestRegistryForInstalledIndex,
   resolveInstalledManifestRegistryIndexFingerprint,
 } from "./manifest-registry-installed.js";
-import type { PluginManifestRecord } from "./manifest-registry.js";
+import { loadPluginManifestRegistry, type PluginManifestRecord } from "./manifest-registry.js";
 import { resolvePluginControlPlaneFingerprint } from "./plugin-control-plane-context.js";
 import type {
   LoadPluginMetadataSnapshotParams,
@@ -14,7 +14,7 @@ import type {
   PluginMetadataSnapshotOwnerMaps,
 } from "./plugin-metadata-snapshot.types.js";
 import { createPluginRegistryIdNormalizer } from "./plugin-registry-id-normalizer.js";
-import { loadPluginRegistrySnapshotWithMetadata } from "./plugin-registry-snapshot.js";
+import { loadPluginRegistrySnapshotWithMetadata } from "./plugin-registry.js";
 export type {
   LoadPluginMetadataSnapshotParams,
   PluginMetadataManifestView,
@@ -45,6 +45,22 @@ function indexesMatch(
     resolveInstalledManifestRegistryIndexFingerprint(left) ===
     resolveInstalledManifestRegistryIndexFingerprint(right)
   );
+}
+
+function normalizeInstalledPluginIndex(index: InstalledPluginIndex): InstalledPluginIndex {
+  return {
+    version: index.version ?? 1,
+    hostContractVersion: index.hostContractVersion ?? "",
+    compatRegistryVersion: index.compatRegistryVersion ?? "",
+    migrationVersion: index.migrationVersion ?? 1,
+    policyHash: index.policyHash ?? "",
+    generatedAtMs: index.generatedAtMs ?? 0,
+    installRecords: index.installRecords ?? {},
+    plugins: index.plugins ?? [],
+    diagnostics: index.diagnostics ?? [],
+    ...(index.warning ? { warning: index.warning } : {}),
+    ...(index.refreshReason ? { refreshReason: index.refreshReason } : {}),
+  } as InstalledPluginIndex;
 }
 
 export function isPluginMetadataSnapshotCompatible(params: {
@@ -102,13 +118,13 @@ function buildPluginMetadataOwnerMaps(
   const contracts = new Map<string, string[]>();
 
   for (const plugin of plugins) {
-    for (const channelId of plugin.channels) {
+    for (const channelId of plugin.channels ?? []) {
       appendOwner(channels, channelId, plugin.id);
     }
     for (const channelId of Object.keys(plugin.channelConfigs ?? {})) {
       appendOwner(channelConfigs, channelId, plugin.id);
     }
-    for (const providerId of plugin.providers) {
+    for (const providerId of plugin.providers ?? []) {
       appendOwner(providers, providerId, plugin.id);
     }
     for (const providerId of Object.keys(plugin.modelCatalog?.providers ?? {})) {
@@ -117,7 +133,7 @@ function buildPluginMetadataOwnerMaps(
     for (const providerId of Object.keys(plugin.modelCatalog?.aliases ?? {})) {
       appendOwner(modelCatalogProviders, providerId, plugin.id);
     }
-    for (const cliBackendId of plugin.cliBackends) {
+    for (const cliBackendId of plugin.cliBackends ?? []) {
       appendOwner(cliBackends, cliBackendId, plugin.id);
     }
     for (const cliBackendId of plugin.setup?.cliBackends ?? []) {
@@ -180,19 +196,34 @@ function loadPluginMetadataSnapshotImpl(
   const registryResult = loadPluginRegistrySnapshotWithMetadata({
     config: params.config,
     workspaceDir: params.workspaceDir,
+    ...(params.stateDir ? { stateDir: params.stateDir } : {}),
     env: params.env,
+    ...(params.preferPersisted !== undefined ? { preferPersisted: params.preferPersisted } : {}),
     ...(params.index ? { index: params.index } : {}),
-  });
+  }) ?? {
+    source: "derived" as const,
+    snapshot: { plugins: [] },
+    diagnostics: [],
+  };
   const registrySnapshotMs = performance.now() - registryStartedAt;
-  const index = registryResult.snapshot;
+  const index = normalizeInstalledPluginIndex(registryResult.snapshot);
   const manifestStartedAt = performance.now();
-  const manifestRegistry = loadPluginManifestRegistryForInstalledIndex({
-    index,
-    config: params.config,
-    workspaceDir: params.workspaceDir,
-    env: params.env,
-    includeDisabled: true,
-  });
+  const manifestRegistry =
+    index.plugins.length === 0
+      ? loadPluginManifestRegistry({
+          config: params.config,
+          workspaceDir: params.workspaceDir,
+          env: params.env,
+          diagnostics: [...index.diagnostics],
+          installRecords: index.installRecords,
+        })
+      : loadPluginManifestRegistryForInstalledIndex({
+          index,
+          config: params.config,
+          workspaceDir: params.workspaceDir,
+          env: params.env,
+          includeDisabled: true,
+        });
   const manifestRegistryMs = performance.now() - manifestStartedAt;
   const normalizePluginId = createPluginRegistryIdNormalizer(index, { manifestRegistry });
   const byPluginId = new Map(manifestRegistry.plugins.map((plugin) => [plugin.id, plugin]));

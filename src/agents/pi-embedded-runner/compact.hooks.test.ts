@@ -658,7 +658,10 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
       });
 
       expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledWith({ sessionFile: "/tmp/session.jsonl" });
+      expect(listener).toHaveBeenCalledWith({
+        sessionFile: "/tmp/session.jsonl",
+        sessionKey: "agent:main:session-1",
+      });
     } finally {
       cleanup();
     }
@@ -696,7 +699,10 @@ describe("compactEmbeddedPiSessionDirect hooks", () => {
 
       expect(result.ok).toBe(true);
       expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledWith({ sessionFile: "/tmp/rotated-session.jsonl" });
+      expect(listener).toHaveBeenCalledWith({
+        sessionFile: "/tmp/rotated-session.jsonl",
+        sessionKey: TEST_SESSION_KEY,
+      });
       expect(sync).toHaveBeenCalledTimes(1);
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
@@ -1096,7 +1102,10 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
 
       expect(result.ok).toBe(true);
       expect(listener).toHaveBeenCalledTimes(1);
-      expect(listener).toHaveBeenCalledWith({ sessionFile: TEST_SESSION_FILE });
+      expect(listener).toHaveBeenCalledWith({
+        sessionFile: TEST_SESSION_FILE,
+        sessionKey: TEST_SESSION_KEY,
+      });
       expect(sync).toHaveBeenCalledWith({
         reason: "post-compaction",
         sessionFiles: [TEST_SESSION_FILE],
@@ -1304,7 +1313,7 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
     );
   });
 
-  it("rotates in the wrapper when a delegated result echoes the current transcript", async () => {
+  it("keeps a delegated result that echoes the current transcript on the active transcript", async () => {
     const maintain = vi.fn(async (_params?: unknown) => ({
       changed: false,
       bytesFreed: 0,
@@ -1328,13 +1337,6 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
         sessionFile: TEST_SESSION_FILE,
       },
     } as never);
-    rotateTranscriptAfterCompactionMock.mockResolvedValueOnce({
-      rotated: true,
-      sessionId: "wrapper-rotated-session",
-      sessionFile: "/tmp/wrapper-rotated-session.jsonl",
-      leafId: "wrapper-rotated-leaf",
-    });
-
     const result = await compactEmbeddedPiSession(
       wrappedCompactionArgs({
         config: {
@@ -1350,13 +1352,13 @@ describe("compactEmbeddedPiSession hooks (ownsCompaction engine)", () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(rotateTranscriptAfterCompactionMock).toHaveBeenCalledTimes(1);
-    expect(result.result?.sessionId).toBe("wrapper-rotated-session");
-    expect(result.result?.sessionFile).toBe("/tmp/wrapper-rotated-session.jsonl");
+    expect(rotateTranscriptAfterCompactionMock).not.toHaveBeenCalled();
+    expect(result.result?.sessionId).toBeUndefined();
+    expect(result.result?.sessionFile).toBeUndefined();
     expect(maintain).toHaveBeenCalledWith(
       expect.objectContaining({
-        sessionId: "wrapper-rotated-session",
-        sessionFile: "/tmp/wrapper-rotated-session.jsonl",
+        sessionId: TEST_SESSION_ID,
+        sessionFile: TEST_SESSION_FILE,
       }),
     );
   });

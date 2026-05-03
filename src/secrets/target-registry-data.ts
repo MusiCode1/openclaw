@@ -1,6 +1,6 @@
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
-import { loadPluginManifestRegistryForPluginRegistry } from "../plugins/plugin-registry.js";
-import { loadBundledChannelSecretContractApi } from "./channel-contract-api.js";
+import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
+import { loadChannelSecretContractApiForRecord } from "./channel-contract-api.js";
 import type { SecretTargetRegistryEntry } from "./target-registry-types.js";
 
 const SECRET_INPUT_SHAPE = "secret_input"; // pragma: allowlist secret
@@ -47,13 +47,11 @@ function hasWebProviderContract(
   return (plugin.contracts?.[contract]?.length ?? 0) > 0;
 }
 
-function listBundledWebProviderSecretTargetRegistryEntries(): SecretTargetRegistryEntry[] {
+function listBundledWebProviderSecretTargetRegistryEntries(
+  bundledPlugins: readonly PluginManifestRecord[],
+): SecretTargetRegistryEntry[] {
   const entries: SecretTargetRegistryEntry[] = [];
-  for (const record of loadPluginManifestRegistryForPluginRegistry({ includeDisabled: true })
-    .plugins) {
-    if (record.origin !== "bundled") {
-      continue;
-    }
+  for (const record of bundledPlugins) {
     for (const config of WEB_PROVIDER_SECRET_CONFIGS) {
       if (
         hasWebProviderContract(record, config.contract) &&
@@ -66,14 +64,12 @@ function listBundledWebProviderSecretTargetRegistryEntries(): SecretTargetRegist
   return entries.toSorted((left, right) => left.id.localeCompare(right.id));
 }
 
-function listBundledPluginConfigSecretTargetRegistryEntries(): SecretTargetRegistryEntry[] {
+function listBundledPluginConfigSecretTargetRegistryEntries(
+  bundledPlugins: readonly PluginManifestRecord[],
+): SecretTargetRegistryEntry[] {
   const entries: SecretTargetRegistryEntry[] = [];
   const seen = new Set<string>();
-  for (const record of loadPluginManifestRegistryForPluginRegistry({ includeDisabled: true })
-    .plugins) {
-    if (record.origin !== "bundled") {
-      continue;
-    }
+  for (const record of bundledPlugins) {
     const secretInputs = record.configContracts?.secretInputs?.paths ?? [];
     for (const secretInput of secretInputs) {
       const entry = createPluginOpenClawConfigSecretTargetEntry(record.id, secretInput.path);
@@ -88,23 +84,21 @@ function listBundledPluginConfigSecretTargetRegistryEntries(): SecretTargetRegis
   return entries.toSorted((left, right) => left.id.localeCompare(right.id));
 }
 
-function listChannelSecretTargetRegistryEntries(): SecretTargetRegistryEntry[] {
+function listChannelSecretTargetRegistryEntries(
+  channelPlugins: readonly PluginManifestRecord[],
+): SecretTargetRegistryEntry[] {
   const entries: SecretTargetRegistryEntry[] = [];
 
-  for (const record of loadPluginManifestRegistryForPluginRegistry({ includeDisabled: true })
-    .plugins) {
-    if (record.origin !== "bundled") {
-      continue;
-    }
+  for (const record of channelPlugins) {
     const channelIds = record.channels;
     if (channelIds.length === 0) {
       continue;
     }
     try {
-      const contractApi = loadBundledChannelSecretContractApi(record.id);
+      const contractApi = loadChannelSecretContractApiForRecord(record);
       entries.push(...(contractApi?.secretTargetRegistryEntries ?? []));
     } catch {
-      // Ignore bundled channels that do not expose a usable secret contract artifact.
+      // Ignore channels that do not expose a usable secret contract artifact.
     }
   }
   return entries;
@@ -455,11 +449,17 @@ export function getSecretTargetRegistry(): SecretTargetRegistryEntry[] {
   if (cachedSecretTargetRegistry) {
     return cachedSecretTargetRegistry;
   }
+  const plugins = loadPluginMetadataSnapshot({
+    config: {},
+    env: process.env,
+  }).plugins;
+  const bundledPlugins = plugins.filter((record) => record.origin === "bundled");
+  const channelPlugins = plugins.filter((record) => record.channels.length > 0);
   cachedSecretTargetRegistry = [
     ...CORE_SECRET_TARGET_REGISTRY,
-    ...listBundledWebProviderSecretTargetRegistryEntries(),
-    ...listBundledPluginConfigSecretTargetRegistryEntries(),
-    ...listChannelSecretTargetRegistryEntries(),
+    ...listBundledWebProviderSecretTargetRegistryEntries(bundledPlugins),
+    ...listBundledPluginConfigSecretTargetRegistryEntries(bundledPlugins),
+    ...listChannelSecretTargetRegistryEntries(channelPlugins),
   ];
   return cachedSecretTargetRegistry;
 }
