@@ -6,7 +6,7 @@ import {
   buildPluginApi,
   registerSingleProviderPlugin,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setAwsSharedIniFileLoaderForTest } from "./aws-credential-refresh.js";
 import { resetBedrockDiscoveryCacheForTest } from "./discovery.js";
 import amazonBedrockPlugin from "./index.js";
@@ -239,6 +239,13 @@ describe("amazon-bedrock provider plugin", () => {
   afterEach(() => {
     setBedrockAppProfileControlPlaneForTest(undefined);
     setAwsSharedIniFileLoaderForTest(undefined);
+    resetBedrockDiscoveryCacheForTest();
+    resetBedrockAppProfileCacheEligibilityForTest();
+  });
+
+  afterAll(() => {
+    vi.doUnmock("@aws-sdk/client-bedrock");
+    vi.resetModules();
   });
 
   it("marks Claude 4.6 Bedrock models as adaptive by default", async () => {
@@ -532,9 +539,10 @@ describe("amazon-bedrock provider plugin", () => {
       const discovery = pluginJson.configSchema?.properties?.discovery;
       const guardrail = pluginJson.configSchema?.properties?.guardrail;
 
-      expect(discovery).toBeDefined();
-      expect(discovery.type).toBe("object");
-      expect(discovery.additionalProperties).toBe(false);
+      expect(discovery).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+      });
       expect(discovery.properties.enabled).toEqual({ type: "boolean" });
       expect(discovery.properties.region).toEqual({ type: "string" });
       expect(discovery.properties.providerFilter).toEqual({
@@ -554,9 +562,10 @@ describe("amazon-bedrock provider plugin", () => {
         minimum: 1,
       });
 
-      expect(guardrail).toBeDefined();
-      expect(guardrail.type).toBe("object");
-      expect(guardrail.additionalProperties).toBe(false);
+      expect(guardrail).toMatchObject({
+        type: "object",
+        additionalProperties: false,
+      });
 
       // Required fields
       expect(guardrail.required).toEqual(["guardrailIdentifier", "guardrailVersion"]);
