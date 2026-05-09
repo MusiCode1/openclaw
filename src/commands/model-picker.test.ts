@@ -142,10 +142,9 @@ const OPENROUTER_CATALOG = [
 ] as const;
 
 function expectRouterModelFiltering(options: Array<{ value: string }>) {
-  expect(options.some((opt) => opt.value === "openrouter/auto")).toBe(false);
-  expect(options.some((opt) => opt.value === "openrouter/meta-llama/llama-3.3-70b:free")).toBe(
-    true,
-  );
+  const values = options.map((option) => option.value);
+  expect(values).not.toContain("openrouter/auto");
+  expect(values).toContain("openrouter/meta-llama/llama-3.3-70b:free");
 }
 
 function createSelectAllMultiselect() {
@@ -497,7 +496,7 @@ describe("promptDefaultModel", () => {
       browseCatalogOnDemand: true,
     });
 
-    expect(result).toEqual({});
+    expect(result).toStrictEqual({});
     expect(loadModelCatalog).not.toHaveBeenCalled();
     expect(select.mock.calls[0]?.[0]).toMatchObject({
       searchable: false,
@@ -534,7 +533,7 @@ describe("promptDefaultModel", () => {
       browseCatalogOnDemand: true,
     });
 
-    expect(result).toEqual({});
+    expect(result).toStrictEqual({});
     expect(loadModelCatalog).not.toHaveBeenCalled();
     expect(select.mock.calls[0]?.[0]).toMatchObject({
       searchable: false,
@@ -745,7 +744,7 @@ describe("promptDefaultModel", () => {
       runtime: {} as never,
     });
 
-    expect(result).toEqual({});
+    expect(result).toStrictEqual({});
     expect(loadModelCatalog).not.toHaveBeenCalled();
     expect(resolveProviderModelPickerEntries).not.toHaveBeenCalled();
     expect(providerModelPickerContributionRuntime.resolve).not.toHaveBeenCalled();
@@ -1123,7 +1122,7 @@ describe("promptModelAllowlist", () => {
     const result = await promptModelAllowlist({ config, prompter });
 
     expect(text.mock.calls[0]?.[0]?.initialValue).toBe("");
-    expect(result).toEqual({});
+    expect(result).toStrictEqual({});
   });
 
   it("shows existing fallbacks in the no-catalog allowlist prompt when an allowlist exists", async () => {
@@ -1498,6 +1497,28 @@ describe("applyModelFallbacksFromSelection", () => {
     expect(next.agents?.defaults?.model).toEqual({
       primary: "openai/gpt-5.5",
       fallbacks: ["google/gemini-3.1-pro-preview"],
+    });
+  });
+
+  it("normalizes a retired Google Gemini primary while writing selected fallbacks", () => {
+    const config = {
+      agents: {
+        defaults: {
+          model: {
+            primary: "google/gemini-3-pro-preview",
+            fallbacks: ["openai/gpt-5.5"],
+          },
+        },
+      },
+    } as OpenClawConfig;
+
+    const next = applyModelFallbacksFromSelection(config, [
+      "google/gemini-3.1-pro-preview",
+      "openai/gpt-5.5",
+    ]);
+    expect(next.agents?.defaults?.model).toEqual({
+      primary: "google/gemini-3.1-pro-preview",
+      fallbacks: ["openai/gpt-5.5"],
     });
   });
 
