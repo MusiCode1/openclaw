@@ -129,6 +129,24 @@ function expectThreadedIsolatedRunner(config: {
   expect(testConfig.runner).toBeUndefined();
 }
 
+function expectForkedNonIsolatedRunner(config: {
+  test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
+}) {
+  const testConfig = requireTestConfig(config);
+  expect(testConfig.pool).toBe("forks");
+  expect(testConfig.isolate).toBe(false);
+  expect(normalizeConfigPath(testConfig.runner)).toBe("test/non-isolated-runner.ts");
+}
+
+function expectForkedIsolatedRunner(config: {
+  test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
+}) {
+  const testConfig = requireTestConfig(config);
+  expect(testConfig.pool).toBe("forks");
+  expect(testConfig.isolate).toBe(true);
+  expect(testConfig.runner).toBeUndefined();
+}
+
 describe("resolveVitestIsolation", () => {
   it("aliases private QA plugin SDK subpaths for source tests only", () => {
     for (const subpath of PRIVATE_PLUGIN_SDK_SUBPATHS) {
@@ -360,7 +378,6 @@ describe("scoped vitest configs", () => {
 
   it("keeps scoped lanes on threads with the shared non-isolated runner", () => {
     for (const config of [
-      defaultChannelsConfig,
       defaultAcpConfig,
       defaultExtensionsConfig,
       defaultExtensionChannelsConfig,
@@ -384,10 +401,10 @@ describe("scoped vitest configs", () => {
       expectThreadedNonIsolatedRunner(config);
     }
 
-    expectThreadedNonIsolatedRunner(defaultCommandsConfig);
+    expectForkedNonIsolatedRunner(defaultCommandsConfig);
 
     expectThreadedNonIsolatedRunner(defaultUiConfig);
-    expectThreadedIsolatedRunner(defaultInfraConfig);
+    expectForkedIsolatedRunner(defaultInfraConfig);
   });
 
   it("keeps the process lane off the openclaw runtime setup", () => {
@@ -435,8 +452,8 @@ describe("scoped vitest configs", () => {
     expect(testConfig.exclude).not.toContain("chat/slash-command-executor.node.test.ts");
   });
 
-  it("defaults channel tests to threads with the non-isolated runner", () => {
-    expectThreadedNonIsolatedRunner(defaultChannelsConfig);
+  it("defaults channel tests to isolated threads", () => {
+    expectThreadedIsolatedRunner(defaultChannelsConfig);
   });
 
   it("keeps the core channel lane limited to non-extension roots", () => {
@@ -690,7 +707,7 @@ describe("scoped vitest configs", () => {
     const extensionExcludes = defaultExtensionsConfig.test?.exclude ?? [];
     expect(
       extensionExcludes.some((pattern) =>
-        path.matchesGlob("openai/openai-codex-provider.test.ts", pattern),
+        path.matchesGlob("openai/openai-chatgpt-provider.test.ts", pattern),
       ),
     ).toBe(true);
   });

@@ -192,15 +192,15 @@ import {
   assertCodexTurnStartResponse,
   readCodexDynamicToolCallParams,
 } from "./protocol-validators.js";
-import {
-  type CodexSandboxPolicy,
-  type CodexTurnEnvironmentParams,
-  type CodexServerNotification,
-  type CodexDynamicToolCallParams,
-  type CodexDynamicToolCallResponse,
-  type CodexTurnStartResponse,
-  type JsonObject,
-  type JsonValue,
+import type {
+  CodexSandboxPolicy,
+  CodexTurnEnvironmentParams,
+  CodexServerNotification,
+  CodexDynamicToolCallParams,
+  CodexDynamicToolCallResponse,
+  CodexTurnStartResponse,
+  JsonObject,
+  JsonValue,
 } from "./protocol.js";
 import { releaseCodexSandboxExecServerEnvironment } from "./sandbox-exec-server.js";
 import {
@@ -1255,7 +1255,6 @@ export async function runCodexAppServerAttempt(
       threadId: thread.threadId,
       turnId,
       currentPromptTexts: [codexTurnPromptText],
-      sourceReplyDeliveryMode: params.sourceReplyDeliveryMode,
       turnWatches,
       activeTurnItemIds,
       activeAppServerTurnRequests,
@@ -1340,14 +1339,16 @@ export async function runCodexAppServerAttempt(
       (!isNativeResponseStreamDelta && correlation.matchesActiveTurn !== false) ||
       nativeResponseStreamDeltaMatchesActiveTurn;
     if (notificationMatchesActiveTurn) {
-      // If a future Codex app-server exposes raw response deltas, treat them as
-      // activity only when scoped to this turn or attributable to a single lease.
-      // Today the durable app-server raw-event surface is rawResponseItem/completed.
+      // If Codex app-server exposes raw response deltas, treat them as activity
+      // only when scoped to this turn or attributable to a single lease.
       turnWatches.noteNotificationReceived(
         notification.method,
         isNativeResponseStreamDelta
           ? {
               attemptProgress: true,
+              ...(turnCrossedToolHandoff
+                ? { attemptTimeoutMs: postToolRawAssistantCompletionIdleTimeoutMs }
+                : {}),
               details: { lastNotificationMethod: notification.method },
             }
           : undefined,
@@ -1611,10 +1612,20 @@ export async function runCodexAppServerAttempt(
     } finally {
       if (requestCountsAsTurnActivity) {
         activeAppServerTurnRequests = Math.max(0, activeAppServerTurnRequests - 1);
+        const postToolContinuationTimeoutMs =
+          request.method === "item/tool/call" && turnCrossedToolHandoff
+            ? postToolRawAssistantCompletionIdleTimeoutMs
+            : undefined;
         turnWatches.touchActivity(`request:${request.method}:response`, {
           arm: armCompletionWatchOnResponse,
           attemptProgress: true,
+          ...(postToolContinuationTimeoutMs !== undefined
+            ? { attemptTimeoutMs: postToolContinuationTimeoutMs }
+            : {}),
         });
+        if (armCompletionWatchOnResponse && postToolContinuationTimeoutMs !== undefined) {
+          turnWatches.armCompletionIdleWatch({ timeoutMs: postToolContinuationTimeoutMs });
+        }
         scheduleTerminalDynamicToolReleaseCheck();
       } else {
         turnWatches.scheduleProgressWatches();
@@ -1925,6 +1936,8 @@ export async function runCodexAppServerAttempt(
   const activeProjector = projector;
   turnWatches.armTerminalIdleWatch();
   turnWatches.touchActivity("turn:start", { arm: true });
+  turnWatches.armAttemptIdleWatch();
+  turnWatches.touchActivity("turn:start", { attemptProgress: true });
   for (const notification of pendingNotifications.splice(0)) {
     await enqueueNotification(notification);
   }
@@ -1968,9 +1981,6 @@ export async function runCodexAppServerAttempt(
     threadId: thread.threadId,
     turnId: activeTurnId,
   });
-  turnWatches.armAttemptIdleWatch();
-  turnWatches.armTerminalIdleWatch();
-  turnWatches.touchActivity("turn:start", { attemptProgress: true });
 
   const abortListener = () => {
     const shouldRetireClient = timedOut;

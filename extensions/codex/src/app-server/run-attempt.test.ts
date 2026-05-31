@@ -612,6 +612,7 @@ describe("runCodexAppServerAttempt", () => {
             config?: {
               "features.code_mode"?: boolean;
               "features.code_mode_only"?: boolean;
+              "features.apply_patch_streaming_events"?: boolean;
             };
           }
         | undefined;
@@ -622,6 +623,7 @@ describe("runCodexAppServerAttempt", () => {
       expect(startParams?.cwd).toBe("/workspace");
       expect(startParams?.config?.["features.code_mode"]).toBe(true);
       expect(startParams?.config?.["features.code_mode_only"]).toBe(false);
+      expect(startParams?.config?.["features.apply_patch_streaming_events"]).toBe(true);
       expect(startParams?.dynamicTools?.map((tool) => tool.name)).toEqual(["message"]);
       expect(startParams?.environments).toEqual([
         { environmentId: environmentAddParams?.environmentId, cwd: "/workspace" },
@@ -935,6 +937,7 @@ describe("runCodexAppServerAttempt", () => {
       },
       "features.code_mode": true,
       "features.code_mode_only": false,
+      "features.apply_patch_streaming_events": true,
     });
     const binding = await readCodexAppServerBinding(sessionFile);
     expect(binding?.mcpServersFingerprint).toBe("mcp-v1");
@@ -3350,7 +3353,7 @@ describe("runCodexAppServerAttempt", () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     const agentDir = path.join(tempDir, "agent");
-    const authProfileId = "openai-codex:work";
+    const authProfileId = "openai:work";
     const pluginConfig = {
       codexPlugins: {
         enabled: true,
@@ -3465,7 +3468,7 @@ describe("runCodexAppServerAttempt", () => {
       profiles: {
         [authProfileId]: {
           type: "oauth",
-          provider: "openai-codex",
+          provider: "openai",
           access: "access-token",
           refresh: "refresh-token",
           expires: Date.now() + 60_000,
@@ -3664,11 +3667,11 @@ describe("runCodexAppServerAttempt", () => {
       path.join(tempDir, "session.jsonl"),
       path.join(tempDir, "workspace"),
     );
-    params.authProfileId = "openai-codex:work";
+    params.authProfileId = "openai:work";
     params.agentDir = path.join(tempDir, "agent");
 
     const run = runCodexAppServerAttempt(params);
-    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai-codex:work"]), {
+    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai:work"]), {
       interval: 1,
     });
     await waitForMethod("turn/start");
@@ -3676,7 +3679,7 @@ describe("runCodexAppServerAttempt", () => {
     await completeTurn({ threadId: "thread-1", turnId: "turn-1" });
     await run;
 
-    expect(seenAuthProfileIds).toEqual(["openai-codex:work"]);
+    expect(seenAuthProfileIds).toEqual(["openai:work"]);
     expect(seenAgentDirs).toEqual([path.join(tempDir, "agent")]);
     expect(requests.map((entry) => entry.method)).toContain("turn/start");
   });
@@ -3868,7 +3871,7 @@ describe("runCodexAppServerAttempt", () => {
     const workspaceDir = path.join(tempDir, "workspace");
     const agentDir = path.join(tempDir, "agent");
     await writeExistingBinding(sessionFile, workspaceDir, {
-      authProfileId: "openai-codex:work",
+      authProfileId: "openai:work",
       dynamicToolsFingerprint: "[]",
     });
     await fs.writeFile(
@@ -3918,7 +3921,7 @@ describe("runCodexAppServerAttempt", () => {
     const run = runCodexAppServerAttempt(params, {
       pluginConfig: { appServer: { mode: "yolo" } },
     });
-    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai-codex:work"]), {
+    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai:work"]), {
       interval: 1,
     });
     await waitForMethod("turn/start");
@@ -3927,9 +3930,9 @@ describe("runCodexAppServerAttempt", () => {
 
     expect(requests.map((entry) => entry.method)).toContain("thread/start");
     expect(requests.map((entry) => entry.method)).not.toContain("thread/resume");
-    expect(seenAuthProfileIds).toEqual(["openai-codex:work"]);
+    expect(seenAuthProfileIds).toEqual(["openai:work"]);
     const savedBinding = await readCodexAppServerBinding(sessionFile);
-    expect(savedBinding?.authProfileId).toBe("openai-codex:work");
+    expect(savedBinding?.authProfileId).toBe("openai:work");
     expect(savedBinding?.threadId).toBe("thread-1");
   });
 
@@ -4201,6 +4204,7 @@ describe("runCodexAppServerAttempt", () => {
     expect(resumeConfig?.["features.hooks"]).toBe(true);
     expect(resumeConfig?.["features.code_mode"]).toBe(true);
     expect(resumeConfig?.["features.code_mode_only"]).toBe(false);
+    expect(resumeConfig?.["features.apply_patch_streaming_events"]).toBe(true);
     expect(resumeRequestParams?.developerInstructions).not.toContain(CODEX_GPT5_BEHAVIOR_CONTRACT);
     const turnRequest = requests.find((request) => request.method === "turn/start");
     const turnRequestParams = turnRequest?.params as Record<string, unknown> | undefined;
@@ -4242,7 +4246,7 @@ describe("runCodexAppServerAttempt", () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     await writeExistingBinding(sessionFile, workspaceDir, {
-      authProfileId: "openai-codex:bound",
+      authProfileId: "openai:bound",
       dynamicToolsFingerprint: "[]",
     });
     const seenAuthProfileIds: Array<string | undefined> = [];
@@ -4269,7 +4273,7 @@ describe("runCodexAppServerAttempt", () => {
     params.agentDir = path.join(tempDir, "agent");
 
     const run = runCodexAppServerAttempt(params);
-    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai-codex:bound"]), {
+    await vi.waitFor(() => expect(seenAuthProfileIds).toEqual(["openai:bound"]), {
       interval: 1,
     });
     await waitForMethod("turn/start");
@@ -4277,7 +4281,7 @@ describe("runCodexAppServerAttempt", () => {
     await completeTurn({ threadId: "thread-existing", turnId: "turn-1" });
     await run;
 
-    expect(seenAuthProfileIds).toEqual(["openai-codex:bound"]);
+    expect(seenAuthProfileIds).toEqual(["openai:bound"]);
     expect(seenAgentDirs).toEqual([path.join(tempDir, "agent")]);
     expect(requests.map((entry) => entry.method)).toContain("turn/start");
   });
