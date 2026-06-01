@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { Bot } from "grammy";
 import {
+  createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
@@ -9,9 +10,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildTelegramConversationContext,
   createTelegramMessageCache,
-  resolveTelegramMessageCachePath,
+  resolveTelegramMessageCacheScope,
   resetTelegramMessageCacheBucketsForTest,
 } from "./message-cache.js";
+import { clearTelegramRuntime, setTelegramRuntime } from "./runtime.js";
+import type { TelegramRuntime } from "./runtime.types.js";
 import {
   getTelegramSendTestMocks,
   importTelegramSendModule,
@@ -62,6 +65,7 @@ let sentMessageStore: NonNullable<Parameters<typeof setTelegramSentMessageStoreF
 
 beforeEach(() => {
   resetPluginStateStoreForTests({ closeDatabase: false });
+  installTelegramStateRuntimeForTest();
   sentMessageStore = createPluginStateSyncKeyedStoreForTests("telegram", {
     namespace: TELEGRAM_SENT_MESSAGE_CACHE_NAMESPACE,
     maxEntries: TELEGRAM_SENT_MESSAGE_CACHE_MAX_ENTRIES,
@@ -69,6 +73,24 @@ beforeEach(() => {
   sentMessageStore.clear();
   setTelegramSentMessageStoreForTest(sentMessageStore);
 });
+
+function installTelegramStateRuntimeForTest(): void {
+  setTelegramRuntime({
+    state: {
+      openKeyedStore: ((options) =>
+        createPluginStateKeyedStoreForTests(
+          "telegram",
+          options,
+        )) as TelegramRuntime["state"]["openKeyedStore"],
+      openSyncKeyedStore: ((options) =>
+        createPluginStateSyncKeyedStoreForTests(
+          "telegram",
+          options,
+        )) as TelegramRuntime["state"]["openSyncKeyedStore"],
+    },
+    channel: {},
+  } as TelegramRuntime);
+}
 
 async function expectChatNotFoundWithChatId(
   action: Promise<unknown>,
@@ -204,6 +226,7 @@ function capturedLogText(logFile: string): string {
 }
 
 afterEach(() => {
+  clearTelegramRuntime();
   clearSentMessageCache();
   setTelegramSentMessageStoreForTest(undefined);
   resetPluginStateStoreForTests();
@@ -698,66 +721,62 @@ describe("sendMessageTelegram", () => {
 
   it("records sent text messages into the Telegram prompt context cache", async () => {
     const storePath = `/tmp/openclaw-telegram-send-context-${process.pid}-${Date.now()}.json`;
-    const persistedPath = resolveTelegramMessageCachePath(storePath);
     const cfg = { session: { store: storePath } };
-    try {
-      botApi.sendMessage.mockResolvedValueOnce({
-        message_id: 1497,
-        date: 1_779_394_740,
+    botApi.sendMessage.mockResolvedValueOnce({
+      message_id: 1497,
+      date: 1_779_394_740,
+      chat: {
+        id: "-1003966283270",
+        type: "supergroup",
+        title: "Keshav and Kelaw - Keshav's Bot",
+      },
+      from: { id: 42, is_bot: true, first_name: "Kelaw", username: "keshavbotagent" },
+      text: "Done already: timeoutSeconds is now 7200s.",
+      message_thread_id: 1154,
+    });
+
+    await sendMessageTelegram("-1003966283270", "Done already: timeoutSeconds is now 7200s.", {
+      cfg,
+      token: "tok",
+      messageThreadId: 1154,
+    });
+
+    const cache = createTelegramMessageCache({
+      scope: resolveTelegramMessageCacheScope(storePath),
+    });
+    await cache.record({
+      accountId: "default",
+      chatId: "-1003966283270",
+      threadId: 1154,
+      msg: {
         chat: {
-          id: "-1003966283270",
+          id: -1003966283270,
           type: "supergroup",
           title: "Keshav and Kelaw - Keshav's Bot",
         },
-        from: { id: 42, is_bot: true, first_name: "Kelaw", username: "keshavbotagent" },
-        text: "Done already: timeoutSeconds is now 7200s.",
         message_thread_id: 1154,
-      });
+        message_id: 1521,
+        date: 1_779_425_460,
+        text: "Did all Amazon crons run fine",
+        from: { id: 5185575566, is_bot: false, first_name: "Keshav" },
+      },
+    });
 
-      await sendMessageTelegram("-1003966283270", "Done already: timeoutSeconds is now 7200s.", {
-        cfg,
-        token: "tok",
-        messageThreadId: 1154,
-      });
+    const context = await buildTelegramConversationContext({
+      cache,
+      accountId: "default",
+      chatId: "-1003966283270",
+      threadId: 1154,
+      messageId: "1521",
+      replyChainNodes: [],
+      recentLimit: 10,
+      replyTargetWindowSize: 2,
+    });
 
-      const cache = createTelegramMessageCache({ persistedPath });
-      await cache.record({
-        accountId: "default",
-        chatId: "-1003966283270",
-        threadId: 1154,
-        msg: {
-          chat: {
-            id: -1003966283270,
-            type: "supergroup",
-            title: "Keshav and Kelaw - Keshav's Bot",
-          },
-          message_thread_id: 1154,
-          message_id: 1521,
-          date: 1_779_425_460,
-          text: "Did all Amazon crons run fine",
-          from: { id: 5185575566, is_bot: false, first_name: "Keshav" },
-        },
-      });
-
-      const context = await buildTelegramConversationContext({
-        cache,
-        accountId: "default",
-        chatId: "-1003966283270",
-        threadId: 1154,
-        messageId: "1521",
-        replyChainNodes: [],
-        recentLimit: 10,
-        replyTargetWindowSize: 2,
-      });
-
-      expect(context.map((entry) => entry.node.messageId)).toContain("1497");
-      expect(context.map((entry) => entry.node.body)).toContain(
-        "Done already: timeoutSeconds is now 7200s.",
-      );
-    } finally {
-      fs.rmSync(persistedPath, { force: true });
-      fs.rmSync(`${storePath}.telegram-sent-messages.json`, { force: true });
-    }
+    expect(context.map((entry) => entry.node.messageId)).toContain("1497");
+    expect(context.map((entry) => entry.node.body)).toContain(
+      "Done already: timeoutSeconds is now 7200s.",
+    );
   });
 
   it("falls back to plain text when Telegram rejects HTML and preserves send params", async () => {
@@ -3131,6 +3150,51 @@ describe("editMessageTelegram", () => {
       }),
     ).resolves.toEqual({ ok: true, messageId: "1", chatId: "123" });
     expect(botApi.editMessageText).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses editMessageCaption when requested for media captions", async () => {
+    botApi.editMessageCaption.mockResolvedValue({ message_id: 1, chat: { id: "123" } });
+
+    await editMessageTelegram("123", 1, "Media **caption**", {
+      token: "tok",
+      cfg: {},
+      editMode: "caption",
+      buttons: [[{ text: "Open", url: "https://example.com" }]],
+    });
+
+    expect(botApi.editMessageText).not.toHaveBeenCalled();
+    expect(botApi.editMessageCaption).toHaveBeenCalledTimes(1);
+    const captionParams = requireRecord(
+      firstMockCall(botApi.editMessageCaption, "editMessageCaption call")[2],
+      "caption edit params",
+    );
+    expect(captionParams.caption).toBe("Media <b>caption</b>");
+    expect(captionParams.parse_mode).toBe("HTML");
+    expect(captionParams.reply_markup).toEqual({
+      inline_keyboard: [[{ text: "Open", url: "https://example.com" }]],
+    });
+  });
+
+  it("falls back to editMessageCaption when Telegram reports a media message has no text", async () => {
+    botApi.editMessageText.mockRejectedValueOnce(
+      new Error("400: Bad Request: there is no text in the message to edit"),
+    );
+    botApi.editMessageCaption.mockResolvedValue({ message_id: 1, chat: { id: "123" } });
+
+    await editMessageTelegram("123", 1, "New caption", {
+      token: "tok",
+      cfg: {},
+      editMode: "auto",
+    });
+
+    expect(botApi.editMessageText).toHaveBeenCalledTimes(1);
+    expect(botApi.editMessageCaption).toHaveBeenCalledTimes(1);
+    const captionParams = requireRecord(
+      firstMockCall(botApi.editMessageCaption, "fallback editMessageCaption call")[2],
+      "fallback caption edit params",
+    );
+    expect(captionParams.caption).toBe("New caption");
+    expect(captionParams.parse_mode).toBe("HTML");
   });
 
   it("derives readable plain text when Telegram rejects edited HTML", async () => {

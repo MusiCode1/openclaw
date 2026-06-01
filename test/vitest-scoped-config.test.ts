@@ -119,16 +119,6 @@ function expectThreadedNonIsolatedRunner(config: {
   expect(testConfig.isolate).toBe(false);
   expect(normalizeConfigPath(testConfig.runner)).toBe("test/non-isolated-runner.ts");
 }
-
-function expectThreadedIsolatedRunner(config: {
-  test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
-}) {
-  const testConfig = requireTestConfig(config);
-  expect(testConfig.pool).toBe("threads");
-  expect(testConfig.isolate).toBe(true);
-  expect(testConfig.runner).toBeUndefined();
-}
-
 function expectForkedNonIsolatedRunner(config: {
   test?: { pool?: unknown; isolate?: unknown; runner?: unknown };
 }) {
@@ -160,6 +150,19 @@ describe("resolveVitestIsolation", () => {
         findAlias(sharedVitestConfig.resolve.alias, `@openclaw/plugin-sdk/${subpath}`),
       ).toThrow(`missing alias @openclaw/plugin-sdk/${subpath}`);
     }
+  });
+
+  it("aliases private core packages to source for clean checkout tests", () => {
+    expect(findAlias(sharedVitestConfig.resolve.alias, "@openclaw/media-core/mime")).toEqual({
+      find: "@openclaw/media-core/mime",
+      replacement: path.join(process.cwd(), "packages", "media-core", "src", "mime.ts"),
+    });
+    expect(findAlias(sharedVitestConfig.resolve.alias, "@openclaw/acp-core/runtime/types")).toEqual(
+      {
+        find: "@openclaw/acp-core/runtime/types",
+        replacement: path.join(process.cwd(), "packages", "acp-core", "src", "runtime", "types.ts"),
+      },
+    );
   });
 
   it("defaults shared scoped configs to the non-isolated runner", () => {
@@ -452,8 +455,8 @@ describe("scoped vitest configs", () => {
     expect(testConfig.exclude).not.toContain("chat/slash-command-executor.node.test.ts");
   });
 
-  it("defaults channel tests to isolated threads", () => {
-    expectThreadedIsolatedRunner(defaultChannelsConfig);
+  it("defaults channel tests to threads with the non-isolated runner", () => {
+    expectThreadedNonIsolatedRunner(defaultChannelsConfig);
   });
 
   it("keeps the core channel lane limited to non-extension roots", () => {
@@ -490,6 +493,11 @@ describe("scoped vitest configs", () => {
 
   it("defaults extension tests to threads with the non-isolated runner", () => {
     expectThreadedNonIsolatedRunner(defaultExtensionsConfig);
+  });
+
+  it("serializes Telegram extension files that share process globals", () => {
+    expectThreadedNonIsolatedRunner(defaultExtensionTelegramConfig);
+    expect(requireTestConfig(defaultExtensionTelegramConfig).fileParallelism).toBe(false);
   });
 
   it("serializes Slack extension files that share process globals", () => {
