@@ -279,7 +279,7 @@ describeControlUiE2e("Control UI mocked Gateway E2E", () => {
     const page = await context.newPage();
     const gateway = await installMockGateway(page, {
       defaultAgentId: "ops",
-      deferredMethods: ["chat.startup"],
+      deferredMethods: ["chat.metadata", "chat.startup"],
       historyMessages: [],
       sessionKey: "global",
     });
@@ -287,7 +287,10 @@ describeControlUiE2e("Control UI mocked Gateway E2E", () => {
     try {
       await page.goto(`${server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");
+      await gateway.waitForRequest("chat.metadata");
       expect(await gateway.getRequests("agents.list")).toHaveLength(0);
+      expect(await gateway.getRequests("commands.list")).toHaveLength(0);
+      expect(await gateway.getRequests("models.list")).toHaveLength(0);
 
       const prompt = "send before agents list completes";
       await page
@@ -355,10 +358,62 @@ describeControlUiE2e("Control UI mocked Gateway E2E", () => {
         sessionId: "control-ui-e2e-session",
         thinkingLevel: null,
       });
+      await gateway.resolveDeferred("chat.metadata", {
+        commands: [],
+        models: [],
+      });
       await page.locator(".chat-thread").getByText(prompt).waitFor({ timeout: 10_000 });
+      await page.getByText("First token visible.").waitFor({ timeout: 10_000 });
       await gateway.emitChatFinal({ runId, text: "History race stayed visible." });
       await page.getByText("History race stayed visible.").waitFor({ timeout: 10_000 });
       expect(await gateway.getRequests("agents.list")).toHaveLength(0);
+    } finally {
+      await context.close();
+    }
+  });
+
+  it("keeps streamed text visible when a chat error terminates the turn", async () => {
+    const context = await browser.newContext({
+      locale: "en-US",
+      serviceWorkers: "block",
+      viewport: { height: 900, width: 1280 },
+    });
+    const page = await context.newPage();
+    const gateway = await installMockGateway(page);
+
+    try {
+      await page.goto(`${server.baseUrl}chat`);
+
+      const prompt = "stream before terminal error";
+      await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
+      await page.getByRole("button", { name: "Send message" }).click();
+
+      const sendRequest = await gateway.waitForRequest("chat.send");
+      const params = requireRecord(sendRequest.params);
+      const runId = requireString(params.idempotencyKey, "chat send idempotency key");
+      const partialText = "Partial answer before gateway error.";
+      await gateway.emitGatewayEvent("chat", {
+        deltaText: partialText,
+        message: {
+          content: [{ text: partialText, type: "text" }],
+          role: "assistant",
+          timestamp: Date.now(),
+        },
+        runId,
+        sessionKey: "main",
+        state: "delta",
+      });
+      await page.getByText(partialText).waitFor({ timeout: 10_000 });
+
+      await gateway.emitGatewayEvent("chat", {
+        errorMessage: "gateway disconnected",
+        runId,
+        sessionKey: "main",
+        state: "error",
+      });
+
+      await page.getByText(partialText).waitFor({ timeout: 10_000 });
+      await page.getByText("Error: gateway disconnected").waitFor({ timeout: 10_000 });
     } finally {
       await context.close();
     }
