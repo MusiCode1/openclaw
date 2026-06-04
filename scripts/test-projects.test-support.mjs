@@ -1647,8 +1647,10 @@ function resolveToolingChangedTestTargets(changedPaths, cwd = process.cwd()) {
   return [...new Set(targets)];
 }
 
+const TOOLING_SCRIPT_PATH_PATTERN = /^scripts\/(.+)\.(?:mjs|cjs|js|mts|cts|ts|sh|py|ps1)$/u;
+
 function resolveConventionalToolingTestTargets(changedPath, cwd = process.cwd()) {
-  const match = /^scripts\/(.+)\.(?:mjs|ts|js|sh|py)$/u.exec(changedPath);
+  const match = TOOLING_SCRIPT_PATH_PATTERN.exec(changedPath);
   if (!match) {
     return null;
   }
@@ -1665,6 +1667,10 @@ function resolveConventionalToolingTestTargets(changedPath, cwd = process.cwd())
   ];
   const targets = candidates.filter((candidate) => fs.existsSync(path.join(cwd, candidate)));
   return targets.length > 0 ? targets : null;
+}
+
+function isToolingScriptPath(changedPath) {
+  return TOOLING_SCRIPT_PATH_PATTERN.test(changedPath);
 }
 
 function resolveParallelsToolingTestTargets(changedPath) {
@@ -1697,7 +1703,11 @@ function resolveToolingTestTargets(changedPath, cwd = process.cwd()) {
   if (explicitTargets && conventionalTargets) {
     return uniqueOrdered([...explicitTargets, ...conventionalTargets]);
   }
-  return explicitTargets ?? conventionalTargets;
+  return (
+    explicitTargets ??
+    conventionalTargets ??
+    (isToolingScriptPath(changedPath) ? [TOOLING_VITEST_CONFIG] : null)
+  );
 }
 
 function shouldUseBroadChangedTargets(env = process.env) {
@@ -2077,6 +2087,9 @@ function shouldUseWholeConfigTarget(kind, targetArg, cwd) {
     return false;
   }
   const relative = toRepoRelativeTarget(targetArg, cwd);
+  if (isTestFileTarget(relative)) {
+    return false;
+  }
   return relative.startsWith("ui/src/") && !relative.startsWith("ui/src/ui/");
 }
 

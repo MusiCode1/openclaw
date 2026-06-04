@@ -267,6 +267,29 @@ describe("scripts/test-projects changed-target routing", () => {
     });
   });
 
+  it("routes unmatched script changes to the tooling suite instead of skipping tests", () => {
+    const targets = [
+      "scripts/check-no-raw-http2-imports.mjs",
+      "scripts/e2e/lib/clawhub-fixture-server.cjs",
+      "scripts/install.ps1",
+    ];
+
+    expect(resolveChangedTestTargetPlan(targets)).toEqual({
+      mode: "targets",
+      targets: ["test/vitest/vitest.tooling.config.ts"],
+    });
+    expect(buildVitestRunPlans(["--changed", "origin/main"], process.cwd(), () => targets)).toEqual(
+      [
+        {
+          config: "test/vitest/vitest.tooling.config.ts",
+          forwardedArgs: [],
+          includePatterns: null,
+          watchMode: false,
+        },
+      ],
+    );
+  });
+
   it("routes Z.AI fallback repro script changes through its regression test", () => {
     expect(resolveChangedTestTargetPlan(["scripts/zai-fallback-repro.ts"])).toEqual({
       mode: "targets",
@@ -1333,6 +1356,28 @@ describe("scripts/test-projects changed-target routing", () => {
         config: "test/vitest/vitest.unit-ui.config.ts",
         forwardedArgs: [],
         includePatterns: ["ui/src/ui/views/dreaming.test.ts"],
+        watchMode: false,
+      },
+    ]);
+  });
+
+  it("keeps explicit non-renderer ui test targets scoped", () => {
+    expect(
+      buildVitestRunPlans([
+        "ui/src/i18n/test/translate.test.ts",
+        "test/scripts/control-ui-i18n.test.ts",
+      ]),
+    ).toEqual([
+      {
+        config: "test/vitest/vitest.tooling.config.ts",
+        forwardedArgs: [],
+        includePatterns: ["test/scripts/control-ui-i18n.test.ts"],
+        watchMode: false,
+      },
+      {
+        config: "test/vitest/vitest.ui.config.ts",
+        forwardedArgs: [],
+        includePatterns: ["ui/src/i18n/test/translate.test.ts"],
         watchMode: false,
       },
     ]);
