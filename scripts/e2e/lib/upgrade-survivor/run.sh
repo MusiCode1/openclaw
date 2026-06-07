@@ -991,7 +991,7 @@ prepare_update_restart_probe() {
   echo "Preparing configured-auth gateway for automatic update restart."
   install_update_restart_systemctl_shim
   seed_update_restart_probe_device_auth
-  start_gateway
+  start_gateway legacy-ready-log-ok
   write_update_restart_service_secretref_env
   install_update_restart_service_unit
 }
@@ -1177,6 +1177,9 @@ probe_gateway_endpoint() {
   if [ -n "${OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_FAILING:-}" ]; then
     args+=(--allow-failing "$OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_FAILING")
   fi
+  if [ "${OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_DEGRADED:-}" = "1" ]; then
+    args+=(--allow-degraded-ready)
+  fi
   args+=(--out "$out_file")
   start_epoch="$(node -e "process.stdout.write(String(Date.now()))")"
   node scripts/e2e/lib/upgrade-survivor/probe-gateway.mjs "${args[@]}"
@@ -1195,7 +1198,7 @@ start_gateway() {
   if [ "$UPDATE_RESTART_MODE" = "auto-auth" ]; then
     printf '%s\n' "$gateway_pid" >"$SYSTEMCTL_SHIM_PID_FILE"
   fi
-  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360
+  openclaw_e2e_wait_gateway_ready "$gateway_pid" "$GATEWAY_LOG" 360 "$port" "${1:-strict}"
   ready_epoch="$(node -e "process.stdout.write(String(Date.now()))")"
   start_seconds=$(((ready_epoch - start_epoch + 999) / 1000))
   if [ "$start_seconds" -gt "$budget" ]; then
@@ -1214,9 +1217,7 @@ ensure_gateway_started() {
 
 check_gateway_probes() {
   healthz_seconds="$(probe_gateway_endpoint /healthz live "$HEALTHZ_JSON")"
-  export OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_FAILING="discord,telegram,whatsapp,feishu,matrix"
   readyz_seconds="$(probe_gateway_endpoint /readyz ready "$READYZ_JSON")"
-  unset OPENCLAW_UPGRADE_SURVIVOR_READYZ_ALLOW_FAILING
 }
 
 check_gateway_status() {
