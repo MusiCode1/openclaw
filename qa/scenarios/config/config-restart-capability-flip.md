@@ -111,8 +111,13 @@ steps:
                             ref: originalImageGenerationModelPrimary
                   sessionKey:
                     ref: sessionKey
+                  deliveryContext:
+                    channel: qa-channel
+                    to: dm:qa-operator
                   note:
                     ref: wakeMarker
+                  replacePaths:
+                    - tools.deny
             - call: waitForGatewayHealthy
               args:
                 - ref: env
@@ -121,6 +126,13 @@ steps:
               args:
                 - ref: env
                 - 60000
+            - call: waitForOutboundMessage
+              args:
+                - ref: state
+                - lambda:
+                    params: [candidate]
+                    expr: "candidate.conversation.id === 'qa-operator' && candidate.text.includes(wakeMarker)"
+                - expr: liveTurnTimeoutMs(env, config.imageTurnTimeoutMs)
             - call: waitForCondition
               saveAs: afterTools
               args:
@@ -209,6 +221,8 @@ steps:
                     tools:
                       deny:
                         expr: "originalToolsDeny === undefined ? null : originalToolsDeny"
+                  replacePaths:
+                    - tools.deny
             - call: waitForGatewayHealthy
               args:
                 - ref: env
