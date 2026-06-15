@@ -99,6 +99,7 @@ import {
   toClientToolDefinitions,
   toToolDefinitions,
 } from "../../agent-tool-definition-adapter.js";
+import { recordStructuredReplayTrustForToolCall } from "../../agent-tools.before-tool-call.js";
 import {
   createOpenClawCodingTools,
   resolveProcessToolScopeKey,
@@ -130,6 +131,7 @@ import {
 } from "../../bootstrap-files.js";
 import { createCacheTrace } from "../../cache-trace.js";
 import {
+  getChannelAgentToolMeta,
   listChannelSupportedActions,
   resolveChannelMessageToolHints,
   resolveChannelReactionGuidance,
@@ -152,7 +154,7 @@ import {
 } from "../../embedded-agent-helpers.js";
 import { countActiveToolExecutions } from "../../embedded-agent-subscribe.handlers.tools.js";
 import { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
-import { isTimeoutError } from "../../failover-error.js";
+import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffects } from "../../harness/agent-end-side-effects.js";
 import { runAgentHarnessBeforeAgentFinalizeHook } from "../../harness/lifecycle-hook-helpers.js";
 import { resolveHeartbeatPromptForSystemPrompt } from "../../heartbeat-system-prompt.js";
@@ -213,6 +215,7 @@ import {
   buildEmptyExplicitToolAllowlistError,
   collectExplicitToolAllowlistSources,
 } from "../../tool-allowlist-guard.js";
+import { collectReplaySafeToolNames, isAgentToolReplaySafe } from "../../tool-replay-safety.js";
 import { filterRuntimeCompatibleTools } from "../../tool-schema-projection.js";
 import { logRuntimeToolSchemaQuarantine } from "../../tool-schema-quarantine.js";
 import {
@@ -458,6 +461,7 @@ import {
 import { detectAndLoadPromptImages } from "./images.js";
 import {
   buildAttemptReplayMetadata,
+  hasAttemptTerminalState,
   resolveSilentToolResultReplyPayload,
   shouldTreatEmptyAssistantReplyAsSilent,
 } from "./incomplete-turn.js";
@@ -1002,7 +1006,7 @@ export async function runEmbeddedAttempt(
     }
     externalAbort = true;
     const reason = getAbortReason(signal);
-    const timeout = reason ? isTimeoutError(reason) : false;
+    const timeout = reason ? isSignalTimeoutReason(reason) : false;
     if (
       shouldFlagCompactionTimeout({
         isTimeout: timeout,
@@ -1279,6 +1283,7 @@ export async function runEmbeddedAttempt(
               workspaceDir: effectiveWorkspace,
             }),
             currentChannelId: params.currentChannelId,
+            currentMessagingTarget: params.currentMessagingTarget,
             currentThreadTs: params.currentThreadTs,
             currentMessageId: params.currentMessageId,
             currentInboundAudio: params.currentInboundAudio,
@@ -1306,6 +1311,7 @@ export async function runEmbeddedAttempt(
             authProfileStore: params.authProfileStore,
             recordToolPrepStage: (name) => corePluginToolStages.mark(name),
             onToolOutcome: params.onToolOutcome,
+            allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
             skillsSnapshot: skillsSnapshotForRun,
             onYield: (message) => {
               yieldDetected = true;
@@ -1622,6 +1628,7 @@ export async function runEmbeddedAttempt(
         agentId: sessionAgentId,
       }),
       onToolOutcome: params.onToolOutcome,
+      allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
     };
     const codeModeTools = codeModeControlsEnabledForRun
       ? createCodeModeTools({
@@ -2195,6 +2202,7 @@ export async function runEmbeddedAttempt(
         provider: params.provider,
         modelId: params.modelId,
         model: params.model,
+        runId: params.runId,
       });
       const resourceLoader = createEmbeddedAgentResourceLoader({
         cwd: effectiveCwd,
@@ -2264,6 +2272,24 @@ export async function runEmbeddedAttempt(
         isPluginTool: (tool) =>
           Boolean(getPluginToolMeta(tool as Parameters<typeof getPluginToolMeta>[0])),
       });
+      const replaySafetyOptions = {
+        declaredReplaySafe: (candidate: { name?: string }) => {
+          const pluginMeta = getPluginToolMeta(
+            candidate as Parameters<typeof getPluginToolMeta>[0],
+          );
+          if (pluginMeta) {
+            return pluginMeta.replaySafe === true;
+          }
+          return getChannelAgentToolMeta(candidate as never) ? false : undefined;
+        },
+      };
+      const isReplaySafeTool = (tool: { name?: string }) =>
+        isAgentToolReplaySafe(tool, replaySafetyOptions);
+      const replaySafeTools = new Set(uncompactedEffectiveTools.filter(isReplaySafeTool));
+      const replaySafeToolNames = collectReplaySafeToolNames(
+        uncompactedEffectiveTools,
+        replaySafetyOptions,
+      );
       // Directory exact-name hydration cannot distinguish a hidden catalog tool
       // from a visible client tool that shadows it. Other modes preserve the
       // existing client/plugin coexistence behavior and use core conflicts only.
@@ -2316,6 +2342,7 @@ export async function runEmbeddedAttempt(
               runId: params.runId,
               loopDetection: clientToolLoopDetection,
               onToolOutcome: params.onToolOutcome,
+              allocateToolOutcomeOrdinal: params.allocateToolOutcomeOrdinal,
             },
           )
         : [];
@@ -2388,7 +2415,9 @@ export async function runEmbeddedAttempt(
                   toolCall.name,
                 );
                 // Catalog entries already own before_tool_call wrapping.
-                const definition = tool ? toToolDefinitions([tool])[0] : undefined;
+                const definition = tool
+                  ? toToolDefinitions([tool], catalogToolHookContext)[0]
+                  : undefined;
                 const hydratedTool = definition ? wrapToolDefinition(definition) : undefined;
                 if (hydratedTool) {
                   log.info(`tool-search: hydrated deferred directory tool ${toolCall.name}`);
@@ -3430,7 +3459,10 @@ export async function runEmbeddedAttempt(
           onAssistantMessageStart: params.onAssistantMessageStart,
           onExecutionPhase: params.onExecutionPhase,
           onAgentEvent: params.onAgentEvent,
-          terminalLifecyclePhase: params.deferTerminalLifecycleEnd ? "finishing" : "end",
+          terminalLifecyclePhase:
+            (params.deferTerminalLifecycle ?? params.deferTerminalLifecycleEnd)
+              ? "finishing"
+              : "end",
           isTerminalAborted: () => aborted,
           resolveTerminalStopReason: () =>
             isAgentRunRestartAbortReason(runAbortController.signal.reason)
@@ -3458,9 +3490,16 @@ export async function runEmbeddedAttempt(
           silentExpected: params.silentExpected,
           config: params.config,
           sessionKey: sandboxSessionKey,
+          currentChannelId: params.currentChannelId,
+          currentMessagingTarget: params.currentMessagingTarget,
+          currentThreadId: params.currentThreadTs,
+          currentMessageId: params.currentMessageId,
+          replyToMode: params.replyToMode,
+          hasRepliedRef: params.hasRepliedRef,
           sessionId: params.sessionId,
           agentId: sessionAgentId,
           builtinToolNames,
+          replaySafeToolNames,
           internalEvents: params.internalEvents,
         }),
       );
@@ -3481,6 +3520,7 @@ export async function runEmbeddedAttempt(
         getMessagingToolSourceReplyPayloads,
         getHeartbeatToolResponse,
         getPendingToolMediaReply,
+        hasToolMediaBlockReply,
         getVisibleBlockReplyCount,
         getSuccessfulCronAdds,
         getReplayState,
@@ -3498,10 +3538,18 @@ export async function runEmbeddedAttempt(
       isCompactionInFlightForExternalSignal = () => activeSession.isCompacting;
       toolSearchCatalogExecutor = async (toolParams) => {
         try {
+          if (toolParams.source === "openclaw" && toolParams.sourceName === "core") {
+            recordStructuredReplayTrustForToolCall(
+              toolParams.toolCallId,
+              toolParams.tool as never,
+              params.runId,
+            );
+          }
           const result = await runToolLifecycle({
             toolName: toolParams.toolName,
             toolCallId: toolParams.toolCallId,
             args: toolParams.input,
+            replaySafe: replaySafeTools.has(toolParams.tool as never),
             execute: async () =>
               await toolParams.tool.execute(
                 toolParams.toolCallId,
@@ -3642,7 +3690,7 @@ export async function runEmbeddedAttempt(
       const onAbort = () => {
         externalAbort = true;
         const reason = params.abortSignal ? getAbortReason(params.abortSignal) : undefined;
-        const timeout = reason ? isTimeoutError(reason) : false;
+        const timeout = reason ? isSignalTimeoutReason(reason) : false;
         if (
           shouldFlagCompactionTimeout({
             isTimeout: timeout,
@@ -5080,6 +5128,7 @@ export async function runEmbeddedAttempt(
           ): entry is {
             toolName: string;
             meta?: string;
+            replaySafe?: boolean;
             asyncStarted?: boolean;
             asyncTaskRunId?: string;
             asyncTaskId?: string;
@@ -5089,12 +5138,14 @@ export async function runEmbeddedAttempt(
           const normalized: {
             toolName: string;
             meta?: string;
+            replaySafe: boolean;
             asyncStarted?: true;
             asyncTaskRunId?: string;
             asyncTaskId?: string;
           } = {
             toolName: entry.toolName,
             meta: entry.meta,
+            replaySafe: entry.replaySafe === true,
           };
           if (entry.asyncStarted === true) {
             normalized.asyncStarted = true;
@@ -5207,7 +5258,9 @@ export async function runEmbeddedAttempt(
 
       const acceptedSessionSpawns = getAcceptedSessionSpawns();
       const observedReplayMetadata = buildAttemptReplayMetadata({
-        toolMetas: toolMetasNormalized,
+        // Structured start arguments already updated replayState for mutations and async work.
+        // Reclassifying by tool name would incorrectly mark read-only cron actions as unsafe.
+        toolMetas: [],
         didSendViaMessagingTool: didSendViaMessagingTool(),
         messagingToolSentTexts: getMessagingToolSentTexts(),
         messagingToolSentMediaUrls: getMessagingToolSentMediaUrls(),
@@ -5234,6 +5287,26 @@ export async function runEmbeddedAttempt(
       const lastToolError = getLastToolError?.();
       const heartbeatToolResponse = getHeartbeatToolResponse();
       const messagingToolSourceReplyPayloads = getMessagingToolSourceReplyPayloads();
+      const hasToolMediaBlockReplyNow = hasToolMediaBlockReply();
+      const hasTerminalOutput = hasAttemptTerminalState({
+        clientToolCalls: completedClientToolCallsForAttempt,
+        yieldDetected,
+        didSendDeterministicApprovalPrompt: didSendDeterministicApprovalPromptNow,
+        heartbeatToolResponse,
+        lastToolError,
+        toolMediaUrls: pendingToolMediaReply?.mediaUrls,
+        toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
+        toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,
+        hasToolMediaBlockReply: hasToolMediaBlockReplyNow,
+        didDeliverSourceReplyViaMessageTool,
+        messagingToolSourceReplyPayloads,
+        messagingToolSentTexts: getMessagingToolSentTexts(),
+        messagingToolSentMediaUrls: getMessagingToolSentMediaUrls(),
+        messagingToolSentTargets: getMessagingToolSentTargets(),
+        acceptedSessionSpawns,
+        successfulCronAdds: getSuccessfulCronAdds(),
+        toolMetas: toolMetasNormalized,
+      });
       const pendingToolMediaPayloadCount = hasVisiblePendingToolMediaReply(pendingToolMediaReply)
         ? 1
         : 0;
@@ -5309,6 +5382,7 @@ export async function runEmbeddedAttempt(
         silentExpected: params.silentExpected,
         emptyAssistantReplyIsSilent,
         lastAssistantStopReason: lastAssistant?.stopReason,
+        hasTerminalOutput,
       });
       trajectoryRecorder?.recordEvent("model.completed", {
         aborted,
@@ -5408,6 +5482,7 @@ export async function runEmbeddedAttempt(
         toolMediaUrls: pendingToolMediaReply?.mediaUrls,
         toolAudioAsVoice: pendingToolMediaReply?.audioAsVoice,
         toolTrustedLocalMedia: pendingToolMediaReply?.trustedLocalMedia,
+        hasToolMediaBlockReply: hasToolMediaBlockReplyNow,
         successfulCronAdds: getSuccessfulCronAdds(),
         cloudCodeAssistFormatError: Boolean(
           lastAssistant?.errorMessage && isCloudCodeAssistFormatError(lastAssistant.errorMessage),

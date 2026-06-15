@@ -125,6 +125,7 @@ describe("buildStatusMessage", () => {
       resolvedHarness: "openclaw",
       queue: { mode: "collect", depth: 0 },
       modelAuth: "api-key",
+      subagentsLine: "🤖 Subagents: 1\n- active run",
       now: 10 * 60_000, // 10 minutes later
     });
     const normalized = normalizeTestText(text);
@@ -145,6 +146,7 @@ describe("buildStatusMessage", () => {
     expect(normalized).not.toContain("verbose");
     expect(normalized).toContain("elevated");
     expect(normalized).toContain("Queue: collect");
+    expect(normalized).toContain("- active run");
   });
 
   it("shows configured model costs for aws-sdk providers", () => {
@@ -1717,7 +1719,7 @@ describe("buildStatusMessage", () => {
     expect(normalized).toContain(
       "This session is pinned to deepseek/deepseek-v4-flash; config primary zhipu/glm-4.5-air will apply to new/unpinned sessions.",
     );
-    expect(normalized).toContain("Clear with: /model zhipu/glm-4.5-air or /reset");
+    expect(normalized).toContain("Clear with: /model default");
     expect(normalized).toContain(
       "Docs: https://docs.openclaw.ai/concepts/models#selection-source-and-fallback-behavior",
     );
