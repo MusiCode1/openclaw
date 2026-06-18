@@ -156,7 +156,7 @@ describe("Codex app-server config", () => {
             },
             unixSockets: {
               " /tmp/mock-proxy.sock ": "allow",
-              "/tmp/blocked.sock": "deny",
+              "/tmp/blocked.sock": "none",
             },
             proxyUrl: "http://127.0.0.1:3128",
             socksUrl: "socks5h://127.0.0.1:8081",
@@ -183,7 +183,7 @@ describe("Codex app-server config", () => {
           "mock-proxy": {
             filesystem: {
               ":minimal": "read",
-              ":workspace_roots": {
+              ":project_roots": {
                 ".": "write",
               },
             },
@@ -196,7 +196,7 @@ describe("Codex app-server config", () => {
               },
               unix_sockets: {
                 "/tmp/mock-proxy.sock": "allow",
-                "/tmp/blocked.sock": "deny",
+                "/tmp/blocked.sock": "none",
               },
               proxy_url: "http://127.0.0.1:3128",
               socks_url: "socks5h://127.0.0.1:8081",
@@ -229,12 +229,12 @@ describe("Codex app-server config", () => {
     const profileName = runtime.networkProxy?.profileName;
     const permissions = runtime.networkProxy?.configPatch.permissions as Record<
       string,
-      { filesystem: { ":workspace_roots": { ".": string } } }
+      { filesystem: { ":project_roots": { ".": string } } }
     >;
 
     expect(profileName).toMatch(/^openclaw-network-[a-f0-9]{16}$/u);
     expect(runtime.networkProxy?.configPatch.default_permissions).toBe(profileName);
-    expect(permissions[profileName ?? ""]?.filesystem[":workspace_roots"]["."]).toBe("read");
+    expect(permissions[profileName ?? ""]?.filesystem[":project_roots"]["."]).toBe("read");
   });
 
   it("clamps oversized app-server timer config", () => {
@@ -357,6 +357,34 @@ describe("Codex app-server config", () => {
     ).toStrictEqual({});
   });
 
+  it("rejects removed app-server topology fields", () => {
+    expect(
+      readCodexPluginConfig({
+        appServer: {
+          transport: "websocket",
+          url: "wss://codex-app-server.example.internal/ws",
+          authToken: "capability-token",
+          connectionClass: "remote",
+          remoteAppsSubstrate: "preconfigured",
+          remoteWorkspace: {
+            localRoot: "/Users/kevinlin/code/openclaw",
+            remoteRoot: "/home/oai/openclaw-workspaces",
+          },
+        },
+      }),
+    ).toStrictEqual({});
+    expect(
+      readCodexPluginConfig({
+        appServer: {
+          remoteWorkspace: {
+            localRoot: "/Users/kevinlin/code/openclaw",
+            remoteRoot: "/home/oai/openclaw-workspaces",
+          },
+        },
+      }),
+    ).toStrictEqual({});
+  });
+
   it("requires a websocket url when websocket transport is configured", () => {
     expect(() =>
       resolveRuntimeForTest({
@@ -364,6 +392,55 @@ describe("Codex app-server config", () => {
         env: {},
       }),
     ).toThrow("appServer.url is required");
+  });
+
+  it("marks authenticated non-loopback websocket app-servers as remote runtimes", () => {
+    const runtime = resolveRuntimeForTest({
+      pluginConfig: {
+        appServer: {
+          transport: "websocket",
+          url: "wss://codex-app-server.example.internal/ws",
+          authToken: "capability-token",
+          remoteWorkspaceRoot: " /home/oai/openclaw-workspaces ",
+        },
+      },
+    });
+
+    expectFields(runtime, "runtime", {
+      connectionClass: "remote",
+      remoteAppsSubstrate: "preconfigured",
+      remoteWorkspaceRoot: "/home/oai/openclaw-workspaces",
+    });
+  });
+
+  it("treats IPv6 loopback websocket app-servers as local loopback", () => {
+    const runtime = resolveRuntimeForTest({
+      pluginConfig: {
+        appServer: {
+          transport: "websocket",
+          url: "ws://[::1]:4242",
+        },
+      },
+    });
+
+    expectFields(runtime, "runtime", {
+      connectionClass: "local-loopback",
+    });
+  });
+
+  it("rejects remote websocket app-servers without identity-bearing auth", () => {
+    expect(() =>
+      resolveRuntimeForTest({
+        pluginConfig: {
+          appServer: {
+            transport: "websocket",
+            url: "wss://codex-app-server.example.internal/ws",
+          },
+        },
+      }),
+    ).toThrow(
+      "remote Codex app-server WebSocket URLs require appServer.authToken or an Authorization header",
+    );
   });
 
   it("defaults native Codex approvals to unchained local execution", () => {
