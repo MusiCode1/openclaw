@@ -1,22 +1,18 @@
+// Session path helper tests pin default store path contracts used by CLI commands.
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { resolveStorePath } from "./paths.js";
 
 describe("resolveStorePath", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  it("uses the default agent store when session.store is absent or blank", () => {
+    const stateDir = path.join(path.parse(process.cwd()).root, "openclaw-test-state");
+    const env = {
+      ...process.env,
+      OPENCLAW_STATE_DIR: stateDir,
+    };
+    const expected = path.join(stateDir, "agents", "work", "sessions", "sessions.json");
 
-  it("uses OPENCLAW_HOME for tilde expansion", () => {
-    vi.stubEnv("OPENCLAW_HOME", "/srv/openclaw-home");
-    vi.stubEnv("HOME", "/home/other");
-
-    const resolved = resolveStorePath("~/.openclaw/agents/{agentId}/sessions/sessions.json", {
-      agentId: "research",
-    });
-
-    expect(resolved).toBe(
-      path.resolve("/srv/openclaw-home/.openclaw/agents/research/sessions/sessions.json"),
-    );
+    expect(resolveStorePath(undefined, { agentId: "work", env })).toBe(expected);
+    expect(resolveStorePath("", { agentId: "work", env })).toBe(expected);
   });
 });
