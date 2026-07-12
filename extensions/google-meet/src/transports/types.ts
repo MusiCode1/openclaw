@@ -22,6 +22,8 @@ type GoogleMeetManualActionReason =
   | "meet-admission-required"
   | "meet-permission-required"
   | "meet-audio-choice-required"
+  | "meet-locale-required"
+  | "meet-session-conflict"
   | "browser-control-unavailable";
 
 type GoogleMeetSpeechBlockedReason =
@@ -105,6 +107,11 @@ export type GoogleMeetChromeHealth = {
   notes?: string[];
 };
 
+export type GoogleMeetBrowserTab = {
+  targetId: string;
+  openedByPlugin: boolean;
+};
+
 export type GoogleMeetSession = {
   id: string;
   url: string;
@@ -113,6 +120,8 @@ export type GoogleMeetSession = {
   /** Canonical agent owner for every later consult and bridge restart. */
   agentId: string;
   state: GoogleMeetSessionState;
+  /** Terminal browser-departure result, retained so repeated leave calls stay idempotent. */
+  browserLeft?: boolean;
   createdAt: string;
   updatedAt: string;
   participantIdentity: string;
@@ -129,6 +138,8 @@ export type GoogleMeetSession = {
     launched: boolean;
     nodeId?: string;
     browserProfile?: string;
+    /** Exact joined tab and whether OpenClaw may close it on leave. */
+    browserTab?: GoogleMeetBrowserTab;
     audioBridge?: {
       type: "command-pair" | "node-command-pair" | "external-command";
       provider?: string;
