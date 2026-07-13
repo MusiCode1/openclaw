@@ -5,11 +5,13 @@ import { createInterface } from "node:readline/promises";
 import { format } from "node:util";
 import type { Command } from "commander";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { callGatewayFromCli } from "openclaw/plugin-sdk/gateway-runtime";
 import {
   clampTimerTimeoutMs,
   parseStrictPositiveInteger,
 } from "openclaw/plugin-sdk/number-runtime";
+import prettyMilliseconds from "pretty-ms";
 import {
   buildGoogleMeetCalendarDayWindow,
   findGoogleMeetCalendarEvent,
@@ -161,6 +163,7 @@ type GoogleMeetGatewayMethod =
   | "googlemeet.leave"
   | "googlemeet.speak"
   | "googlemeet.status"
+  | "googlemeet.transcript"
   | "googlemeet.testListen"
   | "googlemeet.testSpeech";
 
@@ -342,13 +345,11 @@ function formatDuration(value: number | undefined): string {
   if (value === undefined) {
     return "n/a";
   }
-  const totalSeconds = Math.round(value / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return hours > 0
-    ? `${hours}h ${minutes.toString().padStart(2, "0")}m`
-    : `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+  return prettyMilliseconds(Math.max(0, Math.round(value / 1000) * 1000), {
+    millisecondsDecimalDigits: 0,
+    secondsDecimalDigits: 0,
+    unitCount: 2,
+  });
 }
 
 function writeDoctorStatus(status: Awaited<ReturnType<GoogleMeetRuntime["status"]>>): void {
@@ -1316,7 +1317,11 @@ const CRC32_TABLE = new Uint32Array(
 function crc32(buffer: Buffer): number {
   let value = 0xffffffff;
   for (const byte of buffer) {
-    value = CRC32_TABLE[(value ^ byte) & 0xff] ^ (value >>> 8);
+    const tableValue = expectDefined(
+      CRC32_TABLE.at((value ^ byte) & 0xff),
+      "CRC32 lookup table entry",
+    );
+    value = tableValue ^ (value >>> 8);
   }
   return (value ^ 0xffffffff) >>> 0;
 }
@@ -2249,6 +2254,50 @@ export function registerGoogleMeetCli(params: {
       }
       const rt = await params.ensureRuntime();
       writeStdoutJson(await rt.status(sessionId));
+    });
+
+  root
+    .command("transcript")
+    .description("Print the bounded caption transcript for a Meet session")
+    .argument("<session-id>", "Meet session ID")
+    .option("--since <index>", "Resume from the previous response's nextIndex")
+    .option("--json", "Print JSON output", false)
+    .action(async (sessionId: string, options: { since?: string; json?: boolean }) => {
+      const sinceIndex = options.since === undefined ? undefined : Number(options.since);
+      if (sinceIndex !== undefined && (!Number.isSafeInteger(sinceIndex) || sinceIndex < 0)) {
+        throw new Error("--since must be a non-negative safe integer");
+      }
+      const delegated = await callGoogleMeetGateway({
+        callGateway,
+        method: "googlemeet.transcript",
+        payload: { sessionId, ...(sinceIndex === undefined ? {} : { sinceIndex }) },
+      });
+      const result = delegated.ok
+        ? (delegated.payload as Awaited<ReturnType<GoogleMeetRuntime["transcript"]>>)
+        : await (
+            await params.ensureRuntime()
+          ).transcript(sessionId, sinceIndex === undefined ? {} : { sinceIndex });
+      if (!result.found) {
+        throw new Error("session not found");
+      }
+      if (options.json) {
+        writeStdoutJson(result);
+        return;
+      }
+      if (result.evicted) {
+        writeStdoutLine("# transcript evicted from runtime memory");
+      } else if (result.droppedLines) {
+        writeStdoutLine("# %d earlier lines dropped by the transcript cap", result.droppedLines);
+      }
+      for (const line of result.lines ?? []) {
+        writeStdoutLine(
+          "%s%s%s",
+          line.at ? `[${line.at}] ` : "",
+          line.speaker ? `${line.speaker}: ` : "",
+          line.text,
+        );
+      }
+      writeStdoutLine("# nextIndex: %d", result.nextIndex ?? 0);
     });
 
   root

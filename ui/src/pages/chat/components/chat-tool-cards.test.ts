@@ -2,33 +2,10 @@
 
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
-
-vi.mock("../markdown.ts", async (importOriginal) => await importOriginal());
-vi.mock("../tool-display.ts", () => ({
-  formatToolDetail: (display: { detail?: string }) => display.detail,
-  resolveToolDisplay: ({ name, args }: { name: string; args?: unknown }) => {
-    const labels: Record<string, string> = {
-      sessions_spawn: "Sub-agent",
-      skill_workshop: "Skill Workshop",
-      web_search: "Web Search",
-    };
-    const detail =
-      name === "skill_workshop" &&
-      args &&
-      typeof args === "object" &&
-      typeof (args as { action?: unknown }).action === "string"
-        ? (args as { action: string }).action
-        : undefined;
-    return {
-      name,
-      label: labels[name] ?? name,
-      icon: "zap",
-      detail,
-    };
-  },
-}));
-
-import { resolveMcpAppSandboxUrl } from "../../../components/mcp-app-view.ts";
+import {
+  buildMcpAppHostCapabilities,
+  resolveMcpAppSandboxUrl,
+} from "../../../components/mcp-app-view.ts";
 import { t } from "../../../i18n/index.ts";
 import {
   formatDistinctCollapsedToolSummaryText,
@@ -66,6 +43,15 @@ function pointerClick(element: Element) {
 }
 
 describe("tool-cards", () => {
+  it("advertises the CSP actually applied to MCP Apps", () => {
+    expect(
+      buildMcpAppHostCapabilities({ connectDomains: ["https://api.example.com"] }),
+    ).toMatchObject({
+      sandbox: { csp: { connectDomains: ["https://api.example.com"] } },
+    });
+    expect(buildMcpAppHostCapabilities()).toMatchObject({ sandbox: { csp: {} } });
+  });
+
   it("accepts only the dedicated-origin MCP App sandbox endpoint", () => {
     expect(
       resolveMcpAppSandboxUrl(
