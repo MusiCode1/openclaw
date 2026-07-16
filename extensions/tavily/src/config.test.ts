@@ -1,65 +1,115 @@
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-runtime";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  DEFAULT_TAVILY_BASE_URL,
-  DEFAULT_TAVILY_EXTRACT_TIMEOUT_SECONDS,
-  DEFAULT_TAVILY_SEARCH_TIMEOUT_SECONDS,
-  resolveTavilyApiKey,
-  resolveTavilyBaseUrl,
-  resolveTavilyExtractTimeoutSeconds,
-  resolveTavilySearchConfig,
-  resolveTavilySearchTimeoutSeconds,
-} from "./config.js";
+import { resolveTavilyApiKey } from "./config.js";
 
-describe("tavily config helpers", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
-
-  it("reads plugin web search config and prefers it over env defaults", () => {
-    vi.stubEnv("TAVILY_API_KEY", "env-key");
-    vi.stubEnv("TAVILY_BASE_URL", "https://env.tavily.test");
-
-    const cfg = {
-      plugins: {
-        entries: {
-          tavily: {
-            config: {
-              webSearch: {
-                apiKey: "plugin-key",
-                baseUrl: "https://plugin.tavily.test",
-              },
+function configWithApiKey(apiKey: unknown, extra?: Partial<OpenClawConfig>): OpenClawConfig {
+  return {
+    ...extra,
+    plugins: {
+      entries: {
+        tavily: {
+          config: {
+            webSearch: {
+              apiKey,
             },
           },
         },
       },
-    } as OpenClawConfig;
+    },
+  } as OpenClawConfig;
+}
 
-    expect(resolveTavilySearchConfig(cfg)).toEqual({
-      apiKey: "plugin-key",
-      baseUrl: "https://plugin.tavily.test",
-    });
-    expect(resolveTavilyApiKey(cfg)).toBe("plugin-key");
-    expect(resolveTavilyBaseUrl(cfg)).toBe("https://plugin.tavily.test");
+describe("resolveTavilyApiKey", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
-  it("falls back to environment values and defaults", () => {
-    vi.stubEnv("TAVILY_API_KEY", "env-key");
-    vi.stubEnv("TAVILY_BASE_URL", "https://env.tavily.test");
+  it("falls back to process.env.TAVILY_API_KEY for a matching unresolved env SecretRef", () => {
+    vi.stubEnv("TAVILY_API_KEY", "dummy");
 
-    expect(resolveTavilyApiKey()).toBe("env-key");
-    expect(resolveTavilyBaseUrl()).toBe("https://env.tavily.test");
-    expect(resolveTavilyBaseUrl({} as OpenClawConfig)).not.toBe(DEFAULT_TAVILY_BASE_URL);
-    expect(resolveTavilySearchTimeoutSeconds()).toBe(DEFAULT_TAVILY_SEARCH_TIMEOUT_SECONDS);
-    expect(resolveTavilyExtractTimeoutSeconds()).toBe(DEFAULT_TAVILY_EXTRACT_TIMEOUT_SECONDS);
+    expect(
+      resolveTavilyApiKey(
+        configWithApiKey({
+          source: "env",
+          provider: "default",
+          id: "TAVILY_API_KEY",
+        }),
+      ),
+    ).toBe("dummy");
   });
 
-  it("accepts positive numeric timeout overrides and floors them", () => {
-    expect(resolveTavilySearchTimeoutSeconds(19.9)).toBe(19);
-    expect(resolveTavilyExtractTimeoutSeconds(42.7)).toBe(42);
-    expect(resolveTavilySearchTimeoutSeconds(0)).toBe(DEFAULT_TAVILY_SEARCH_TIMEOUT_SECONDS);
-    expect(resolveTavilyExtractTimeoutSeconds(Number.NaN)).toBe(
-      DEFAULT_TAVILY_EXTRACT_TIMEOUT_SECONDS,
-    );
+  it("allows a configured env provider when its allowlist includes TAVILY_API_KEY", () => {
+    vi.stubEnv("TAVILY_API_KEY", "dummy");
+
+    expect(
+      resolveTavilyApiKey(
+        configWithApiKey(
+          {
+            source: "env",
+            provider: "managed-env",
+            id: "TAVILY_API_KEY",
+          },
+          {
+            secrets: {
+              providers: {
+                "managed-env": {
+                  source: "env",
+                  allowlist: ["TAVILY_API_KEY"],
+                },
+              },
+            },
+          } as Partial<OpenClawConfig>,
+        ),
+      ),
+    ).toBe("dummy");
+  });
+
+  it.each([
+    {
+      name: "file SecretRef",
+      apiKey: {
+        source: "file",
+        provider: "default",
+        id: "/etc/secrets/tavily",
+      },
+    },
+    {
+      name: "exec SecretRef",
+      apiKey: {
+        source: "exec",
+        provider: "default",
+        id: "TAVILY_API_KEY",
+      },
+    },
+    {
+      name: "different env id",
+      apiKey: {
+        source: "env",
+        provider: "default",
+        id: "OTHER_API_KEY",
+      },
+    },
+    {
+      name: "env provider with a blocking allowlist",
+      apiKey: {
+        source: "env",
+        provider: "managed-env",
+        id: "TAVILY_API_KEY",
+      },
+      extra: {
+        secrets: {
+          providers: {
+            "managed-env": {
+              source: "env",
+              allowlist: [],
+            },
+          },
+        },
+      } as Partial<OpenClawConfig>,
+    },
+  ])("does not fall back to process.env.TAVILY_API_KEY for $name", ({ apiKey, extra }) => {
+    vi.stubEnv("TAVILY_API_KEY", "dummy");
+
+    expect(resolveTavilyApiKey(configWithApiKey(apiKey, extra))).toBeUndefined();
   });
 });
