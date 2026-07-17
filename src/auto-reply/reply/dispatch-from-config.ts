@@ -184,6 +184,7 @@ import {
   buildChannelSourceTurnId,
   readChannelSourceTurnId,
   setChannelSourceTurnId,
+  shouldMintChannelSourceTurnId,
 } from "./source-turn-id.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
 import { resolveRunTypingPolicy } from "./typing-policy.js";
@@ -982,16 +983,18 @@ async function dispatchReplyFromConfigInner(
 
   const durableSourceTurnId =
     readChannelSourceTurnId(ctx) ??
-    buildChannelSourceTurnId({
-      provider: resolveOriginMessageProvider({
-        originatingChannel: replyRoute.channel,
-        provider: ctx.Provider ?? ctx.Surface,
-      }),
-      accountId: replyRoute.accountId,
-      conversationId: replyRoute.to,
-      messageId:
-        normalizeOptionalString(ctx.MessageSidFull) ?? normalizeOptionalString(ctx.MessageSid),
-    });
+    (shouldMintChannelSourceTurnId(ctx.Provider ?? ctx.Surface)
+      ? buildChannelSourceTurnId({
+          provider: resolveOriginMessageProvider({
+            originatingChannel: replyRoute.channel,
+            provider: ctx.Provider ?? ctx.Surface,
+          }),
+          accountId: replyRoute.accountId,
+          conversationId: replyRoute.to,
+          messageId:
+            normalizeOptionalString(ctx.MessageSidFull) ?? normalizeOptionalString(ctx.MessageSid),
+        })
+      : undefined);
   // Compute once before hooks. The prepared agent turn reuses this exact route-scoped id.
   setChannelSourceTurnId(ctx, durableSourceTurnId);
   if (isDuplicateRestartRecoverySource(sessionStoreEntry.entry, durableSourceTurnId)) {
@@ -2311,16 +2314,13 @@ async function dispatchReplyFromConfigInner(
                     if (isDispatchOperationAborted()) {
                       return;
                     }
-                    // External resolvers call this SDK callback directly and may
-                    // send only the shipped string form; normalize once so
-                    // channel forwards and fallback notices see both fields.
-                    const planSteps =
-                      normalizeAgentPlanSteps(payload.planSteps) ??
-                      normalizeAgentPlanSteps(payload.steps);
+                    const steps = normalizeAgentPlanSteps(payload.steps);
                     const normalized = {
-                      ...payload,
-                      steps: planSteps?.map((entry) => entry.step) ?? payload.steps,
-                      planSteps,
+                      phase: payload.phase,
+                      title: payload.title,
+                      explanation: payload.explanation,
+                      steps,
+                      source: payload.source,
                     };
                     markProgress();
                     await waitForPendingDirectBlockReplyDelivery(
@@ -2346,7 +2346,7 @@ async function dispatchReplyFromConfigInner(
                     }
                     await sendPlanUpdate({
                       explanation: normalized.explanation,
-                      steps: planSteps,
+                      steps,
                     });
                   },
                   onApprovalEvent: async (payload) => {
