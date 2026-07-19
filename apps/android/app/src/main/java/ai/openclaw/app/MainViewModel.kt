@@ -7,6 +7,7 @@ import ai.openclaw.app.chat.ChatMessage
 import ai.openclaw.app.chat.ChatOutboxItem
 import ai.openclaw.app.chat.ChatPendingToolCall
 import ai.openclaw.app.chat.ChatPlanStep
+import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionEntry
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
 import ai.openclaw.app.chat.ChatWidgetResource
@@ -32,6 +33,8 @@ import ai.openclaw.app.ui.chat.chatComposerTextDraftsFromSnapshot
 import ai.openclaw.app.ui.chat.matchesSession
 import ai.openclaw.app.ui.chat.shouldMigrateComposerDraft
 import ai.openclaw.app.ui.chat.toOutgoingAttachment
+import ai.openclaw.app.voice.AndroidAudioInputSession
+import ai.openclaw.app.voice.AudioInputDeviceOption
 import ai.openclaw.app.voice.VoiceConversationEntry
 import ai.openclaw.app.voice.VoiceWakePreferences
 import android.Manifest
@@ -568,6 +571,8 @@ class MainViewModel private constructor(
   val canvasDebugStatusEnabled: StateFlow<Boolean> = prefs.canvasDebugStatusEnabled
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
   val speakerEnabled: StateFlow<Boolean> = prefs.speakerEnabled
+  val preferredCameraFacing: StateFlow<String> = prefs.preferredCameraFacing
+  val preferredAudioInputDevice: StateFlow<String?> = prefs.preferredAudioInputDevice
   val voiceWakeEnabled: StateFlow<Boolean> = prefs.voiceWakeEnabled
   val voiceWakeWords: StateFlow<List<String>> = prefs.voiceWakeWords
   val voiceWakeAvailable: StateFlow<Boolean> = runtimeState(initial = false) { it.voiceWakeAvailable }
@@ -579,6 +584,8 @@ class MainViewModel private constructor(
   val voiceWakeWordsNoticeText: StateFlow<String?> = runtimeState(initial = null) { it.voiceWakeWordsNoticeText }
   val appearanceThemeMode: StateFlow<AppearanceThemeMode> = prefs.appearanceThemeMode
   val voiceCaptureMode: StateFlow<VoiceCaptureMode> = runtimeState(initial = VoiceCaptureMode.Off) { it.voiceCaptureMode }
+  val activeAudioInputDevicePreference: StateFlow<String?> =
+    runtimeState(initial = null) { it.activeAudioInputDevicePreference }
   val micEnabled: StateFlow<Boolean> = runtimeState(initial = false) { it.micEnabled }
 
   val micCooldown: StateFlow<Boolean> = runtimeState(initial = false) { it.micCooldown }
@@ -614,6 +621,7 @@ class MainViewModel private constructor(
   val chatModelCatalog: StateFlow<List<GatewayModelSummary>> = runtimeState(initial = emptyList()) { it.chatModelCatalog }
   val chatStreamingAssistantText: StateFlow<String?> = runtimeState(initial = null) { it.chatStreamingAssistantText }
   val chatPendingToolCalls: StateFlow<List<ChatPendingToolCall>> = runtimeState(initial = emptyList()) { it.chatPendingToolCalls }
+  val chatQuestions: StateFlow<List<ChatQuestionPrompt>> = runtimeState(initial = emptyList()) { it.chatQuestions }
   val chatPlanSteps: StateFlow<List<ChatPlanStep>> = runtimeState(initial = emptyList()) { it.chatPlanSteps }
   val chatSessions: StateFlow<List<ChatSessionEntry>> = runtimeState(initial = emptyList()) { it.chatSessions }
   val pendingRunCount: StateFlow<Int> = runtimeState(initial = 0) { it.pendingRunCount }
@@ -1090,7 +1098,11 @@ class MainViewModel private constructor(
     ensureRuntime().setTalkModeEnabled(enabled)
   }
 
-  suspend fun requestVoiceNotePermission(): Boolean {
+  suspend fun requestVoiceNotePermission(): Boolean = requestRecordAudioPermission()
+
+  suspend fun requestDictationPermission(): Boolean = requestRecordAudioPermission()
+
+  private suspend fun requestRecordAudioPermission(): Boolean {
     val requester = permissionRequester ?: return false
     return try {
       requester.requestIfMissing(listOf(Manifest.permission.RECORD_AUDIO))[Manifest.permission.RECORD_AUDIO] == true
@@ -1107,9 +1119,30 @@ class MainViewModel private constructor(
     runtimeRef.value?.releaseVoiceNoteMic()
   }
 
+  internal fun tryAcquireDictationMic(): Boolean = runtimeRef.value?.tryAcquireDictationMic() == true
+
+  internal fun releaseDictationMic() {
+    runtimeRef.value?.releaseDictationMic()
+  }
+
   fun setSpeakerEnabled(enabled: Boolean) {
     ensureRuntime().setSpeakerEnabled(enabled)
   }
+
+  fun setPreferredCameraFacing(facing: String) {
+    ensureRuntime().setPreferredCameraFacing(facing)
+  }
+
+  fun setPreferredAudioInputDevice(key: String?) {
+    ensureRuntime().setPreferredAudioInputDevice(key)
+  }
+
+  suspend fun hasFrontAndBackCameras(): Boolean {
+    val facings = ensureRuntime().camera.listDevices().mapTo(mutableSetOf()) { it.position }
+    return "front" in facings && "back" in facings
+  }
+
+  internal fun observeAudioInputDevices(onChanged: (List<AudioInputDeviceOption>) -> Unit): AutoCloseable = AndroidAudioInputSession.observeAvailableDevices(getApplication(), onChanged)
 
   fun setVoiceWakeEnabled(enabled: Boolean) {
     ensureRuntime().setVoiceWakeEnabled(enabled)
@@ -1646,6 +1679,17 @@ class MainViewModel private constructor(
 
   fun deleteChatOutboxCommand(id: String) {
     ensureRuntime().deleteChatOutboxCommand(id)
+  }
+
+  fun resolveChatQuestion(
+    id: String,
+    answers: Map<String, List<String>>,
+  ) {
+    ensureRuntime().resolveChatQuestion(id, answers)
+  }
+
+  fun skipChatQuestion(id: String) {
+    ensureRuntime().skipChatQuestion(id)
   }
 
   suspend fun listBackgroundTasks(agentId: String): List<BackgroundTask> = ensureRuntime().listBackgroundTasks(agentId)

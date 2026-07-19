@@ -401,14 +401,6 @@ export interface CurrentConversationBindings {
   updated_at: number;
 }
 
-export interface DatabaseVerifications {
-  error: string | null;
-  kind: string;
-  path: string;
-  result: string;
-  verified_at: number;
-}
-
 export interface DeliveryQueueEntries {
   account_id: string | null;
   channel: string | null;
@@ -509,6 +501,7 @@ export interface DiagnosticEvents {
   event_key: string;
   payload_json: string;
   scope: string;
+  sequence: Generated<number>;
 }
 
 export interface DiagnosticStabilityBundles {
@@ -1027,6 +1020,13 @@ export interface SubagentRuns {
   spawn_mode: string | null;
   started_at: number | null;
   suppress_announce_reason: string | null;
+  swarm_collector: number | null;
+  swarm_completion_status: string | null;
+  swarm_group_id: string | null;
+  swarm_output_schema_json: string | null;
+  swarm_schema_error: string | null;
+  swarm_structured_json: string | null;
+  swarm_usage_json: string | null;
   task: string;
   task_name: string | null;
   wake_on_descendant_settle: number | null;
@@ -1244,6 +1244,7 @@ export interface WorkerWorkspacePendingResults {
   recovery_requested_at_ms: number | null;
   run_id: string;
   session_id: string;
+  staged_result_ref: string | null;
   workspace_accepted_at_ms: number | null;
 }
 
@@ -1338,7 +1339,6 @@ export interface DB {
   config_health_entries: ConfigHealthEntries;
   cron_jobs: CronJobs;
   current_conversation_bindings: CurrentConversationBindings;
-  database_verifications: DatabaseVerifications;
   delivery_queue_entries: DeliveryQueueEntries;
   device_auth_tokens: DeviceAuthTokens;
   device_bootstrap_tokens: DeviceBootstrapTokens;

@@ -64,6 +64,7 @@ export type SystemAgentSetupApplyResult = {
   configPath: string;
   configHashBefore: string | null;
   configHashAfter: string | null;
+  bootstrapPending: boolean;
   lines: string[];
 };
 
@@ -411,7 +412,7 @@ export async function applySystemAgentSetup(
     async () =>
       await transformConfigWithPendingPluginInstalls({
         afterWrite: { mode: "auto" },
-        writeOptions: { allowConfigSizeDrop: false },
+        writeOptions: { auditOrigin: "system-agent", allowConfigSizeDrop: false },
         transform: async (currentConfig, context) => {
           const currentSnapshot = requireValidSystemAgentSetupSnapshot(context.snapshot);
           if (hasExpectedConfigHash && context.previousHash !== expectedConfigHash) {
@@ -510,7 +511,7 @@ export async function applySystemAgentSetup(
     }
   };
 
-  await runCommittedFollowUp(
+  const workspaceResult = await runCommittedFollowUp(
     async () =>
       await onboardHelpers.ensureWorkspaceAndSessions(workspace, runtime, {
         skipBootstrap: Boolean(nextConfig.agents?.defaults?.skipBootstrap),
@@ -612,6 +613,7 @@ export async function applySystemAgentSetup(
     configPath: committed.path,
     configHashBefore: committed.previousHash,
     configHashAfter: committed.persistedHash,
+    bootstrapPending: workspaceResult?.bootstrapPending === true,
     lines,
   };
 }

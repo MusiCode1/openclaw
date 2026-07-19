@@ -236,6 +236,8 @@ type PersistentApplyContext = {
 
 type PersistentApplyOutcome = {
   summary: string;
+  bootstrapPending?: boolean;
+  agentId?: string;
   details?: Record<string, unknown>;
   /** Overrides the after-snapshot config path in the audit record. */
   configPath?: string;
@@ -280,7 +282,13 @@ export async function applyPersistentOperation(params: {
     );
   }
   runtime.log(`[openclaw] done: ${auditOperation}`);
-  return { applied: true };
+  return {
+    applied: true,
+    ...(outcome.bootstrapPending === undefined
+      ? {}
+      : { bootstrapPending: outcome.bootstrapPending }),
+    ...(outcome.agentId ? { agentId: outcome.agentId } : {}),
+  };
 }
 
 export async function runConfigSetOperation(params: {
@@ -499,6 +507,7 @@ export async function executeSetup(
       ctx.runtime.log(`Default model: ${verified.modelRef} (verified and kept)`);
       return {
         summary: "Bootstrapped setup workspace",
+        bootstrapPending: applied.bootstrapPending,
         configPath: after.path || applied.configPath,
         details: {
           workspace,
@@ -567,6 +576,7 @@ export async function executeSetDefaultModel(
       const result = await mutateConfigFile({
         base: "source",
         writeOptions: {
+          auditOrigin: "system-agent",
           preCommitRuntimePreflight: async (sourceConfig) => {
             const commitRoute = await projectRoute(sourceConfig);
             if (!sameDefaultInferenceRoute(commitRoute, selectedRouteForCommit)) {
