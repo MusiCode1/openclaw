@@ -1553,12 +1553,49 @@ describe("grouped chat rendering", () => {
     expect(container.querySelector(".chat-group-footer")).toBeNull();
   });
 
+  it("renders the active startup phase with elapsed time", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderStreamGroup([{ kind: "reading-indicator", key: "reading", startedAt: 1_000 }], {
+        startupPhase: "provisioning_environment",
+      }),
+      container,
+    );
+
+    expect(container.querySelector(".chat-working-indicator__status")?.textContent).toContain(
+      "Provisioning environment…",
+    );
+    expect(container.querySelector(".chat-working-indicator__elapsed")).not.toBeNull();
+    expect(
+      container.querySelector(".chat-working-indicator__status > .agent-chat__sr-only"),
+    ).toBeNull();
+  });
+
+  it("shows live output usage beside elapsed time", () => {
+    const container = document.createElement("div");
+
+    render(
+      renderStreamGroup([{ kind: "reading-indicator", key: "reading", startedAt: 1_000 }], {
+        runOutputTokens: 5_500,
+      }),
+      container,
+    );
+
+    expect(container.querySelector(".chat-working-indicator__elapsed")).not.toBeNull();
+    expect(container.querySelector(".chat-working-indicator__tokens")?.textContent?.trim()).toBe(
+      "5.5k output tokens",
+    );
+  });
+
   it("relabels the working indicator while the run waits for approval", () => {
     const container = document.createElement("div");
 
     render(
       renderStreamGroup([{ kind: "reading-indicator", key: "reading", startedAt: 1_000 }], {
+        startupPhase: "starting_model",
         waitingApproval: true,
+        runOutputTokens: 5_500,
       }),
       container,
     );
@@ -1567,6 +1604,7 @@ describe("grouped chat rendering", () => {
       "Waiting for approval…",
     );
     expect(container.querySelector(".chat-working-indicator__elapsed")).toBeNull();
+    expect(container.querySelector(".chat-working-indicator__tokens")).toBeNull();
   });
 
   it("renders the active plan card inside the working stream group", () => {
@@ -1614,7 +1652,7 @@ describe("grouped chat rendering", () => {
     expect(container.querySelector(".chat-reading-indicator")).not.toBeNull();
   });
 
-  it("seeds a stable punch stance per reading-indicator key", () => {
+  it("seeds a stable claw stance per reading-indicator key", () => {
     const stanceFor = (key: string) => {
       const container = document.createElement("div");
       render(renderStreamGroup([{ kind: "reading-indicator", key, startedAt: 1 }]), container);
@@ -1625,15 +1663,17 @@ describe("grouped chat rendering", () => {
     };
 
     const first = stanceFor("stream:agent:main:pending");
-    // Stable across re-renders: same key always fights the same style.
+    // Stable across re-renders: same key always claws the same style.
     expect(stanceFor("stream:agent:main:pending")).toEqual(first);
-    // At most one stance modifier; orthodox is the unmarked default.
+    // At most one stance modifier; plain in-place clawing is the unmarked default.
     expect(first.length).toBeLessThanOrEqual(1);
     for (const cls of first) {
       expect([
         "chat-reading-indicator--southpaw",
         "chat-reading-indicator--flurry",
-        "chat-reading-indicator--haymaker",
+        "chat-reading-indicator--spin",
+        "chat-reading-indicator--shadowbox",
+        "chat-reading-indicator--backflip",
       ]).toContain(cls);
     }
   });
@@ -1649,12 +1689,16 @@ describe("grouped chat rendering", () => {
       return {
         hidden: status?.querySelector(".agent-chat__sr-only")?.textContent,
         visibleLabels: status?.querySelectorAll("span:not(.agent-chat__sr-only)").length,
+        // The whimsical long-wait phrase rides in its own aria-hidden element,
+        // never as a plain status span screen readers would announce.
+        decorativePhrases: status?.querySelectorAll("openclaw-working-phrase[aria-hidden]").length,
       };
     };
 
-    expect(statusFor(1_000)).toEqual({ hidden: "Working…", visibleLabels: 0 });
-    expect(statusFor(1_500)).toEqual({ hidden: "Working…", visibleLabels: 0 });
-    expect(statusFor(8_000)).toEqual({ hidden: "Working…", visibleLabels: 0 });
+    const expected = { hidden: "Working…", visibleLabels: 0, decorativePhrases: 1 };
+    expect(statusFor(1_000)).toEqual(expected);
+    expect(statusFor(1_500)).toEqual(expected);
+    expect(statusFor(8_000)).toEqual(expected);
   });
 
   it("renders configured local user names", () => {
@@ -1681,7 +1725,7 @@ describe("grouped chat rendering", () => {
     expect(avatar?.tagName).toBe("DIV");
   });
 
-  it("renders a durable sender label and avatar chip in user message metadata", async () => {
+  it("keeps the sender name visible without duplicating a gutter avatar", () => {
     const container = document.createElement("div");
     const group: MessageGroup = {
       kind: "group",
@@ -1706,6 +1750,7 @@ describe("grouped chat rendering", () => {
         assistantName: "OpenClaw",
         assistantAvatar: null,
         userName: "Local User",
+        showAvatarGutter: true,
       }),
       container,
     );
@@ -1713,11 +1758,12 @@ describe("grouped chat rendering", () => {
     expect(
       container.querySelector<HTMLElement>(".chat-group.user .chat-sender-name")?.textContent,
     ).toBe("alice");
-    await vi.waitFor(() => {
-      expect(
-        container.querySelector<HTMLElement>(".chat-author-avatar__initials")?.textContent?.trim(),
-      ).toBe("AE");
-    });
+    expect(
+      container.querySelector(".chat-group-footer--persistent-identity .chat-sender-name")
+        ?.textContent,
+    ).toBe("alice");
+    expect(container.querySelector(".chat-avatar.user")).not.toBeNull();
+    expect(container.querySelector(".chat-author-avatar")).toBeNull();
   });
 
   it("tints attributed user groups with the sender's stable identity hue", () => {
@@ -1784,6 +1830,7 @@ describe("grouped chat rendering", () => {
           assistantName: "OpenClaw",
           userId: "profile-1",
           userName: "Fuller Stack",
+          showAvatarGutter: true,
         },
       ),
       container,
@@ -1792,9 +1839,13 @@ describe("grouped chat rendering", () => {
     expect(
       container.querySelector<HTMLElement>(".chat-group.user .chat-sender-name")?.textContent,
     ).toBe("Fuller Stack");
+    expect(
+      container.querySelector(".chat-group-footer--persistent-identity .chat-sender-name")
+        ?.textContent,
+    ).toBe("Fuller Stack");
   });
 
-  it("renders an author avatar for a user group with sender identity", async () => {
+  it("renders a compact author avatar when the gutter is hidden", async () => {
     const container = document.createElement("div");
     render(
       renderMessageGroup(
@@ -1817,11 +1868,14 @@ describe("grouped chat rendering", () => {
           showReasoning: true,
           showToolCalls: true,
           assistantName: "OpenClaw",
+          showAvatarGutter: false,
         },
       ),
       container,
     );
 
+    expect(container.querySelector(".chat-avatar.user")).toBeNull();
+    expect(container.querySelector(".chat-group-persistent-author")).toBeNull();
     await vi.waitFor(() => {
       expect(container.querySelector(".chat-author-avatar__initials")?.textContent?.trim()).toBe(
         "AE",
@@ -1856,6 +1910,7 @@ describe("grouped chat rendering", () => {
         showReasoning: true,
         showToolCalls: true,
         assistantName: "OpenClaw",
+        showAvatarGutter: false,
       }),
       container,
     );

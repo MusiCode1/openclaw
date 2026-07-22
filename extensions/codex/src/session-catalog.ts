@@ -40,6 +40,7 @@ import {
 } from "./app-server/shared-client.js";
 import { assertCodexArchiveDescendantsUnowned } from "./app-server/thread-archive-guard.js";
 import { codexControlRequest } from "./command-rpc.js";
+import { resolveCodexCatalogCreateSession } from "./session-catalog-create.js";
 import {
   adoptedSourceKey,
   adoptionSessionKeyRest,
@@ -1217,9 +1218,10 @@ function toGenericCatalogHost(
       const canOpenTerminal =
         isInteractiveThreadSource(session.source) &&
         (local ? localTerminalAvailable : host.canOpenTerminalCodex === true);
+      const name = session.name ?? session.fallbackName;
       return {
         threadId: session.threadId,
-        ...(session.name != null ? { name: session.name } : {}),
+        ...(name ? { name } : {}),
         ...(session.cwd ? { cwd: session.cwd } : {}),
         status: session.status,
         ...(session.createdAt != null ? { createdAt: session.createdAt } : {}),
@@ -1250,6 +1252,11 @@ function registerCodexSessionCatalog(params: {
   const provider: SessionCatalogProvider = {
     id: "codex",
     label: "Codex",
+    resolveCreateSession: ({ agentId }) =>
+      resolveCodexCatalogCreateSession(
+        params.getRuntimeConfig() ?? (params.api.config as OpenClawConfig),
+        agentId,
+      ),
     list: async (query) => {
       const localTerminalAvailable = resolveLocalCodexTerminalExecutable() !== undefined;
       const { onHost, ...gatewayQuery } = query;

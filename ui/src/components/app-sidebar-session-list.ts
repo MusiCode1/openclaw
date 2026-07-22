@@ -19,8 +19,10 @@ import { AppSidebarSessionNarrationElement } from "./app-sidebar-session-narrati
 import {
   limitSidebarSessionRows,
   loadStoredSidebarCatalogGrouping,
+  rowDemandsVisibility,
   SIDEBAR_SESSION_PAGE_SIZE,
   SIDEBAR_SESSION_SEE_LESS_THRESHOLD,
+  RowVisibilityReason,
   sidebarSessionMetaId,
   storeSidebarCatalogGrouping,
   type SidebarRecentSession,
@@ -65,6 +67,7 @@ export abstract class AppSidebarSessionListElement extends AppSidebarSessionNarr
       displaySubtitle: display?.subtitle,
       sidebarLiveActivity: this.sidebarLiveActivity,
       narrationLine: this.sidebarNarrationLines.get(session.key),
+      observerDigest: this.sidebarObserverDigests.get(session.key) ?? null,
     });
     const pullRequestState = session.worktreeId
       ? this.sessionPullRequestIndicatorState(session.key, session.worktreeId)
@@ -158,6 +161,7 @@ export abstract class AppSidebarSessionListElement extends AppSidebarSessionNarr
           ></openclaw-viewer-facepile>
           ${renderSessionRowBadges({
             ...session,
+            pullRequest: session.pullRequest ?? display?.pullRequest,
             hasApproval: sessionHasPendingApproval(this.approvalBadgeSnapshot(), session.key),
           })}
           ${pinnedState}
@@ -256,20 +260,12 @@ export abstract class AppSidebarSessionListElement extends AppSidebarSessionNarr
 
   protected visibleSessionChildren(session: SidebarRecentSession): readonly SidebarRecentSession[] {
     const showAllChildren = this.fullyShownChildSessionKeys.has(session.key);
-    // The cap hides quiet children only: the active branch and any branch with
-    // live runs (runningChildCount is transitive) must stay visible, or an
-    // auto-expanded parent would omit its own selection or a running session.
+    // Active, running, and attention-bearing branches must bypass the quiet-child cap.
     return showAllChildren
       ? session.children
       : session.children.filter(
           (child, index) =>
-            index < SIDEBAR_VISIBLE_CHILD_SESSION_LIMIT ||
-            child.visuallyActive ||
-            child.containsActiveDescendant ||
-            child.hasActiveRun ||
-            child.status === "running" ||
-            child.runningChildCount > 0 ||
-            child.attention.kind !== "none",
+            index < SIDEBAR_VISIBLE_CHILD_SESSION_LIMIT || rowDemandsVisibility(child),
         );
   }
 
@@ -348,9 +344,12 @@ export abstract class AppSidebarSessionListElement extends AppSidebarSessionNarr
             : "threads";
     // Collapsed Coding still signals live runs so background work stays visible.
     const collapsedRunningDot =
-      collapsed && section.work && section.rows.some((row) => row.hasActiveRun);
+      collapsed &&
+      section.work &&
+      section.rows.some((row) => rowDemandsVisibility(row, RowVisibilityReason.ActiveRun));
     const collapsedAttentionDot =
-      collapsed && section.rows.some((row) => row.attention.kind !== "none");
+      collapsed &&
+      section.rows.some((row) => rowDemandsVisibility(row, RowVisibilityReason.Attention));
     const acceptsSessions =
       isPinned ||
       (this.sessionsGrouping === "category" && (section.id === "ungrouped" || Boolean(group)));
