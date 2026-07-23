@@ -1,5 +1,6 @@
 import type { SessionCatalogPullRequestSummary } from "../../../packages/gateway-protocol/src/schema/sessions-catalog.js";
 import type { SessionObserverDigest } from "../../../packages/gateway-protocol/src/schema/sessions.js";
+import type { SessionCreatedActor } from "../../../packages/gateway-protocol/src/schema/sessions.js";
 import type { SessionAgentAttentionIconId } from "../../../packages/gateway-protocol/src/session-icon.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { SessionRunStatus } from "../api/types.ts";
@@ -50,6 +51,7 @@ export function sidebarSessionAttentionPriority(attention: SidebarSessionAttenti
 
 export type SidebarRecentSession = {
   key: string;
+  createdActor?: SessionCreatedActor;
   label: string;
   meta: string;
   /** Compact repo/branch/node line for work sessions. */
@@ -62,6 +64,7 @@ export type SidebarRecentSession = {
   modelSelectionLocked: boolean;
   kind?: string;
   pinned: boolean;
+  archived?: boolean;
   icon?: string;
   category?: string;
   channel?: string;
@@ -75,6 +78,7 @@ export type SidebarRecentSession = {
   cloudWorkerActive: boolean;
   hasAutomation: boolean;
   pullRequest?: SessionCatalogPullRequestSummary;
+  outboxCount?: number;
   unread: boolean;
   lastReadAt?: number;
   attention: SidebarSessionAttention;
@@ -134,7 +138,24 @@ export type SidebarSessionGroupMenuState = {
 };
 
 export type SidebarSessionSortMode = "created" | "updated";
+export type SidebarSessionStatusFilter = "active" | "archived" | "all";
 export type SidebarSessionsScrollState = "none" | "top" | "middle" | "bottom";
+
+export function resolveSidebarSessionsScrollState(
+  element: HTMLElement,
+): SidebarSessionsScrollState {
+  const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+  if (maxScrollTop <= 1) {
+    return "none";
+  }
+  if (element.scrollTop <= 1) {
+    return "top";
+  }
+  if (element.scrollTop >= maxScrollTop - 1) {
+    return "bottom";
+  }
+  return "middle";
+}
 export type SidebarSessionGroupDropTarget = {
   group: string;
   position: "before" | "after";
@@ -171,6 +192,7 @@ export function sidebarSessionMetaId(key: string): string {
 const SIDEBAR_SESSION_GROUPING_STORAGE_KEY = "openclaw:sidebar:sessions:grouping";
 const SIDEBAR_SESSION_CATALOG_GROUPING_STORAGE_KEY = "openclaw:sidebar:sessions:catalog-grouping";
 const SIDEBAR_SESSION_SHOW_CRON_STORAGE_KEY = "openclaw:sidebar:sessions:show-cron";
+const SIDEBAR_SESSION_STATUS_FILTER_STORAGE_KEY = "openclaw:sidebar:sessions:status-filter";
 const SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY =
   "openclaw:sidebar:sessions:collapsed-sections";
 
@@ -207,6 +229,11 @@ export function loadStoredSidebarSessionsShowCron(): boolean {
   return getSafeLocalStorage()?.getItem(SIDEBAR_SESSION_SHOW_CRON_STORAGE_KEY) === "true";
 }
 
+export function loadStoredSidebarSessionStatusFilter(): SidebarSessionStatusFilter {
+  const stored = getSafeLocalStorage()?.getItem(SIDEBAR_SESSION_STATUS_FILTER_STORAGE_KEY);
+  return stored === "archived" || stored === "all" ? stored : "active";
+}
+
 export function loadStoredCollapsedSessionSections(): ReadonlySet<string> {
   try {
     const raw = getSafeLocalStorage()?.getItem(SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY);
@@ -238,6 +265,10 @@ export function storeSidebarSessionsShowCron(show: boolean) {
   getSafeLocalStorage()?.setItem(SIDEBAR_SESSION_SHOW_CRON_STORAGE_KEY, String(show));
 }
 
+export function storeSidebarSessionStatusFilter(value: SidebarSessionStatusFilter) {
+  getSafeLocalStorage()?.setItem(SIDEBAR_SESSION_STATUS_FILTER_STORAGE_KEY, value);
+}
+
 export function storeCollapsedSessionSections(sections: ReadonlySet<string>) {
   getSafeLocalStorage()?.setItem(
     SIDEBAR_SESSION_COLLAPSED_SECTIONS_STORAGE_KEY,
@@ -252,6 +283,12 @@ export const SIDEBAR_SESSION_SORT_OPTIONS = [
   mode: SidebarSessionSortMode;
   labelKey: "chat.sidebar.sortCreated" | "chat.sidebar.sortUpdated";
 }>;
+
+export const SIDEBAR_SESSION_STATUS_OPTIONS = [
+  "active",
+  "archived",
+  "all",
+] as const satisfies readonly SidebarSessionStatusFilter[];
 
 export function sessionCatalogHostKey(catalogId: string, hostId: string): string {
   return `${catalogId}\u0000${hostId}`;

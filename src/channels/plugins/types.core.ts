@@ -25,6 +25,7 @@ import type { ChannelMessageCapability } from "./message-capabilities.js";
 
 export type { ChannelId } from "./channel-id.types.js";
 export type { ChannelLegacyStateMigrationPlan } from "./legacy-state-migration.types.js";
+export type { ChannelSetupInput } from "./setup-input.js";
 
 type ChannelExposure = {
   configured?: boolean;
@@ -94,110 +95,6 @@ export type ChannelMessageToolDiscovery = {
    */
   mediaSourceParams?: ChannelMessageToolMediaSourceParams | null;
 };
-
-type ChannelSetupEnvelope = {
-  name?: string;
-  token?: string;
-  tokenFile?: string;
-  useEnv?: boolean;
-  defaultTo?: string;
-  allowFrom?: string[];
-};
-
-type DeprecatedChannelSetupFields = {
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  privateKey?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  secret?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  secretFile?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  botToken?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  appToken?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  userToken?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  signingSecret?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  identity?: "bot" | "user";
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  mode?: "socket" | "http" | "relay";
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  signalNumber?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  cliPath?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  dbPath?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  service?: "imessage" | "sms" | "auto";
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  region?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  authDir?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  httpUrl?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  httpHost?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  httpPort?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  webhookPath?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  webhookUrl?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  audienceType?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  audience?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  homeserver?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  dangerouslyAllowPrivateNetwork?: boolean;
-  /**
-   * Compatibility alias for `dangerouslyAllowPrivateNetwork`.
-   * @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238).
-   */
-  allowPrivateNetwork?: boolean;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  proxy?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  userId?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  accessToken?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  password?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  deviceName?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  avatarUrl?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  initialSyncLimit?: number;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  profile?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  ship?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  url?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  baseUrl?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  relayUrls?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  code?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  groupChannels?: string[];
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  dmAllowlist?: string[];
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  autoDiscoverChannels?: boolean;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  workspace?: string;
-  /** @deprecated Channel-owned setup field; declare it in the owning plugin's setup input type. Removed at the next Plugin SDK major (#112238). */
-  agentActivity?: boolean;
-};
-
-/** Generic setup envelope used by CLI, onboarding, and channel-owned setup adapters. */
-export type ChannelSetupInput = ChannelSetupEnvelope & DeprecatedChannelSetupFields;
 
 export type ChannelStatusIssue = {
   channel: ChannelId;

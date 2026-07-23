@@ -473,12 +473,48 @@ describe("session accessor seam", () => {
 
     const recorded = await recordInboundSessionMeta({ storePath, sessionKey, ctx });
     expect(recorded?.origin?.provider).toBe("webchat");
+    expect(recorded).toMatchObject({
+      createdVia: "channel",
+      createdActor: { type: "human", id: "webchat:user-1" },
+      createdAt: expect.any(Number),
+    });
+    const creationStamp = {
+      createdVia: recorded?.createdVia,
+      createdActor: recorded?.createdActor,
+      createdAt: recorded?.createdAt,
+    };
+
+    await recordInboundSessionMeta({
+      storePath,
+      sessionKey,
+      ctx: { ...ctx, From: "webchat:different-sender" },
+    });
+    expect(loadSessionEntry({ sessionKey, storePath })).toMatchObject(creationStamp);
 
     // Detached result: caller mutations must never leak into cached store state.
     if (recorded) {
       recorded.origin = { provider: "mutated" };
     }
     expect(loadSessionEntry({ sessionKey, storePath })?.origin?.provider).toBe("webchat");
+
+    const operatorKey = "agent:main:dashboard:operator-created";
+    const operator = await recordInboundSessionMeta({
+      storePath,
+      sessionKey: operatorKey,
+      ctx: {
+        ...ctx,
+        SessionKey: operatorKey,
+        SessionCreation: {
+          via: "operator",
+          actor: { type: "human", id: "profile-ada" },
+        },
+      },
+    });
+    expect(operator).toMatchObject({
+      createdVia: "operator",
+      createdActor: { type: "human", id: "profile-ada" },
+      createdAt: expect.any(Number),
+    });
   });
 
   it("does not create sessions when inbound meta recording opts out of upsert", async () => {
