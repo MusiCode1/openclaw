@@ -9,14 +9,8 @@ import {
   statSync,
 } from "node:fs";
 import path from "node:path";
-import {
-  clearNodeSqliteKyselyCacheForDatabase,
-  executeSqliteQuerySync,
-  getNodeSqliteKysely,
-} from "../infra/kysely-sync.js";
-import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
-import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
   assertAgentDeletionPathFence,
@@ -26,11 +20,10 @@ import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   type OpenClawRegisteredAgentDatabase,
 } from "./openclaw-agent-db-contract.js";
+import { withOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-readonly.js";
+import { detectOpenClawStateDatabaseSchemaMigrationsFromDatabase } from "./openclaw-state-db-schema-repair.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import {
-  detectOpenClawStateDatabaseSchemaMigrations,
-  OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-  OPENCLAW_STATE_SCHEMA_VERSION,
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db.js";
@@ -71,6 +64,26 @@ function areAsciiCaseVariants(left: string | undefined, right: string | undefine
   const foldAsciiCase = (value: string) =>
     value.replace(/[A-Z]/gu, (letter) => String.fromCharCode(letter.charCodeAt(0) + 0x20));
   return left !== undefined && right !== undefined && foldAsciiCase(left) === foldAsciiCase(right);
+}
+
+function shouldProbeUnicodeCaseVariants(left: string, right: string): boolean {
+  const hasNonAscii = (value: string) =>
+    value.split("").some((character) => character.charCodeAt(0) > 0x7f);
+  if (!hasNonAscii(left) && !hasNonAscii(right)) {
+    return false;
+  }
+  const lowercaseEquivalent = left.toLowerCase() === right.toLowerCase();
+  const uppercaseEquivalent = left.toUpperCase() === right.toUpperCase();
+  if (!lowercaseEquivalent && !uppercaseEquivalent) {
+    return false;
+  }
+  // Keep dotted-I expansions distinct even on filesystems that collapse them.
+  // That existing isolation contract avoids locale-sensitive owner aliasing.
+  return !(
+    Array.from(left).length !== Array.from(right).length &&
+    lowercaseEquivalent &&
+    !uppercaseEquivalent
+  );
 }
 
 function isWindowsReservedPathComponent(value: string): boolean {
@@ -282,9 +295,6 @@ function areMissingSuffixAliases(params: {
   if (params.left === params.right) {
     return true;
   }
-  if (!areAsciiCaseVariants(params.left.normalize("NFC"), params.right.normalize("NFC"))) {
-    return false;
-  }
   const leftSegments = params.left.split(path.sep);
   const rightSegments = params.right.split(path.sep);
   if (
@@ -318,11 +328,6 @@ function areMissingSuffixAliases(params: {
       const rightSegment = rightSegments[index]!;
       const normalizedLeft = leftSegment.normalize("NFC");
       const normalizedRight = rightSegment.normalize("NFC");
-      if (!areAsciiCaseVariants(normalizedLeft, normalizedRight)) {
-        missingSuffixAliasCache.set(cacheKey, false);
-        return false;
-      }
-
       const availableProbeNameLength =
         maxProbePathLength - probeParent.length - (probeParent.endsWith(path.sep) ? 0 : 1);
       const componentProbeNameLength = Math.max(
@@ -333,9 +338,30 @@ function areMissingSuffixAliases(params: {
 
       let nextProbeParent: string | undefined;
       if (normalizedLeft !== normalizedRight) {
+        // Case and normalization are independent gates. A synthetic ASCII case
+        // probe here never bypasses the raw-spelling normalization probe below.
+        let caseProbeParent = probeParent;
+        let caseProbePairs = createAsciiCaseProbePairs(componentProbeNameLength, forbiddenNames);
+        if (!areAsciiCaseVariants(normalizedLeft, normalizedRight)) {
+          if (!shouldProbeUnicodeCaseVariants(normalizedLeft, normalizedRight)) {
+            missingSuffixAliasCache.set(cacheKey, false);
+            return false;
+          }
+          const privateParent = createNeutralProbeDirectory({
+            parentPath: probeParent,
+            createdPaths,
+            forbiddenNames,
+            nameLength: componentProbeNameLength,
+          });
+          if (!privateParent) {
+            return true;
+          }
+          caseProbeParent = privateParent;
+          caseProbePairs = [[leftSegment, rightSegment]];
+        }
         const caseProbe = createDirectoryAliasProbe({
-          parentPath: probeParent,
-          pairs: createAsciiCaseProbePairs(componentProbeNameLength, forbiddenNames),
+          parentPath: caseProbeParent,
+          pairs: caseProbePairs,
           createdPaths,
         });
         if (!caseProbe) {
@@ -669,20 +695,13 @@ export function listOpenClawRegisteredAgentDatabases(
     }
     return [];
   }
-  if (detectOpenClawStateDatabaseSchemaMigrations(options).length > 0) {
-    throw new Error(
-      `OpenClaw state database ${pathname} has a legacy agent database registry schema; run openclaw doctor --fix to migrate it.`,
-    );
-  }
-
-  const database = openNodeSqliteDatabase(pathname, {
-    readOnly: true,
-  });
-  try {
-    database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
-    if (readSqliteUserVersion(database) > OPENCLAW_STATE_SCHEMA_VERSION) {
+  // Discovery runs per row in list hot paths, so the legacy-schema gate and the
+  // query share one process-held state handle instead of opening two
+  // connections per call.
+  return withOpenClawStateDatabaseReadOnly(({ db: database }) => {
+    if (detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(database, pathname).length > 0) {
       throw new Error(
-        `OpenClaw state database ${pathname} uses a newer schema than this OpenClaw build.`,
+        `OpenClaw state database ${pathname} has a legacy agent database registry schema; run openclaw doctor --fix to migrate it.`,
       );
     }
     const registryTable = database
@@ -710,8 +729,5 @@ export function listOpenClawRegisteredAgentDatabases(
       lastSeenAt: row.last_seen_at,
       sizeBytes: row.size_bytes,
     }));
-  } finally {
-    clearNodeSqliteKyselyCacheForDatabase(database);
-    database.close();
-  }
+  }, options);
 }

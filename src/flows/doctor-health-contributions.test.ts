@@ -1,6 +1,5 @@
 // Doctor health contribution tests cover plugin-provided health checks.
 import fs from "node:fs";
-import os from "node:os";
 import nodePath from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DoctorPrompter } from "../commands/doctor-prompter.js";
@@ -8,6 +7,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { LEGACY_SECRETREF_ENV_MARKER_PREFIX } from "../config/types.secrets.js";
 import { migrateLegacySecretRefEnvMarkers } from "../secrets/legacy-secretref-env-marker.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
+import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { CORE_HEALTH_CHECKS } from "./doctor-core-checks.js";
 import { resolveDoctorContributionHealthChecks } from "./doctor-health-contributions.js";
 import {
@@ -23,6 +23,11 @@ const mocks = vi.hoisted(() => ({
   runDoctorHealthRepairs: vi.fn(),
   maybeRepairLegacyFlatAuthProfileStores: vi.fn().mockResolvedValue(undefined),
   maybeRepairCanonicalApiKeyFieldAlias: vi.fn().mockResolvedValue(undefined),
+  maybeMigrateLegacyPluginModelCatalogs: vi.fn().mockResolvedValue({
+    detected: 0,
+    migrated: 0,
+    warnings: [],
+  }),
   maybeRepairGatewayDaemon: vi.fn().mockResolvedValue(undefined),
   maybeRepairLegacyOAuthProfileIds: vi.fn(async (cfg: unknown) => cfg),
   maybeRepairLegacyOAuthSidecarProfiles: vi.fn().mockResolvedValue(undefined),
@@ -205,6 +210,10 @@ vi.mock("../commands/doctor-gateway-services.js", () => ({
 vi.mock("../commands/doctor-auth-flat-profiles.js", () => ({
   maybeRepairLegacyFlatAuthProfileStores: mocks.maybeRepairLegacyFlatAuthProfileStores,
   maybeRepairCanonicalApiKeyFieldAlias: mocks.maybeRepairCanonicalApiKeyFieldAlias,
+}));
+
+vi.mock("../commands/doctor-plugin-model-catalog.js", () => ({
+  maybeMigrateLegacyPluginModelCatalogs: mocks.maybeMigrateLegacyPluginModelCatalogs,
 }));
 
 vi.mock("../commands/doctor-gateway-daemon-flow.js", () => ({
@@ -540,6 +549,12 @@ describe("doctor health contributions", () => {
     mocks.maybeRepairLegacyFlatAuthProfileStores.mockResolvedValue(undefined);
     mocks.maybeRepairCanonicalApiKeyFieldAlias.mockClear();
     mocks.maybeRepairCanonicalApiKeyFieldAlias.mockResolvedValue(undefined);
+    mocks.maybeMigrateLegacyPluginModelCatalogs.mockClear();
+    mocks.maybeMigrateLegacyPluginModelCatalogs.mockResolvedValue({
+      detected: 0,
+      migrated: 0,
+      warnings: [],
+    });
     mocks.maybeRepairGatewayDaemon.mockClear();
     mocks.maybeRepairGatewayDaemon.mockResolvedValue(undefined);
     mocks.maybeRepairLegacyOAuthProfileIds.mockClear();
@@ -1715,6 +1730,11 @@ describe("doctor health contributions", () => {
       cfg: ctx.cfg,
       prompter: ctx.prompter,
     });
+    expect(mocks.maybeMigrateLegacyPluginModelCatalogs).toHaveBeenCalledWith({
+      cfg: ctx.cfg,
+      prompter: ctx.prompter,
+      runtime: ctx.runtime,
+    });
   });
 
   it("registers auth profile health as an opt-in structured check", async () => {
@@ -1919,12 +1939,13 @@ describe("doctor health contributions", () => {
   });
 
   it("keeps legacy plugin dependency lint opt-in and read-only", async () => {
-    const previousStateDir = process.env.OPENCLAW_STATE_DIR;
-    const tempDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openclaw-legacy-plugin-deps-lint-"));
-    const stateDir = nodePath.join(tempDir, "state");
+    const openClawState = await createOpenClawTestState({
+      layout: "state-only",
+      prefix: "openclaw-legacy-plugin-deps-lint-",
+    });
+    const stateDir = openClawState.stateDir;
     const legacyRuntimeRoot = nodePath.join(stateDir, "plugin-runtime-deps");
     fs.mkdirSync(legacyRuntimeRoot, { recursive: true });
-    process.env.OPENCLAW_STATE_DIR = stateDir;
     try {
       const contributionChecks = await resolveDoctorContributionHealthChecks();
       const check = contributionChecks.find(
@@ -1961,12 +1982,7 @@ describe("doctor health contributions", () => {
       });
       expect(fs.existsSync(legacyRuntimeRoot)).toBe(true);
     } finally {
-      if (previousStateDir === undefined) {
-        delete process.env.OPENCLAW_STATE_DIR;
-      } else {
-        process.env.OPENCLAW_STATE_DIR = previousStateDir;
-      }
-      fs.rmSync(tempDir, { recursive: true, force: true });
+      await openClawState.cleanup();
     }
   });
 
