@@ -8,7 +8,6 @@ import type { ThinkLevel } from "../../auto-reply/thinking.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveSessionWorkStartError } from "../../config/sessions/lifecycle.js";
-import { formatSqliteSessionFileMarker } from "../../config/sessions/sqlite-marker.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SourceDeliveryPlan } from "../../infra/outbound/source-delivery-plan.js";
@@ -31,6 +30,7 @@ import { isDetachedCronSessionTarget } from "../session-target.js";
 import type { CronJob, CronRunDiagnostics } from "../types.js";
 import { resolveCronModelSelection, resolveCronModelSelectionOwner } from "./model-selection.js";
 import { buildCronAgentDefaultsConfig, resolveCronActiveRuntimeConfig } from "./run-config.js";
+import { buildCurrentConversationContextBlock } from "./run-current-context.js";
 import {
   appendCronDeliveryInstruction,
   canPromptForMessageTool,
@@ -248,13 +248,6 @@ export async function prepareCronRunContext(params: {
   }
   const runSessionId = cronSession.sessionEntry.sessionId;
   const currentRunSessionId = () => cronSession.sessionEntry.sessionId ?? runSessionId;
-  if (!cronSession.sessionEntry.sessionFile?.trim()) {
-    cronSession.sessionEntry.sessionFile = formatSqliteSessionFileMarker({
-      agentId,
-      sessionId: runSessionId,
-      storePath: cronSession.storePath,
-    });
-  }
   const runSessionKey =
     usesDetachedRunSession || baseSessionKey.startsWith("cron:")
       ? `${agentSessionKey}:run:${runSessionId}`
@@ -507,7 +500,22 @@ export async function prepareCronRunContext(params: {
     });
 
   const { formattedTime, timeLine } = resolveCronStyleNow(runtimeCfg, now);
-  const message = resolveCronAgentTurnMessage(input);
+  const originalMessage = resolveCronAgentTurnMessage(input);
+  const sourceSessionEntry = sourceSessionKey ? cronSession.store[sourceSessionKey] : undefined;
+  // Current jobs run detached for token hygiene; this bounded tail preserves the
+  // conversation-bound contract without unbounded seeding or transcript continuation.
+  const currentConversationContext =
+    input.job.sessionTarget === "current" && agentPayload && sourceSessionKey && sourceSessionEntry
+      ? await buildCurrentConversationContextBlock({
+          agentId,
+          sourceSessionEntry,
+          sourceSessionKey,
+          storePath: cronSession.storePath,
+        })
+      : undefined;
+  const message = currentConversationContext
+    ? `${currentConversationContext}\n\n${originalMessage}`
+    : originalMessage;
   const base = `[cron:${input.job.id} ${input.job.name}] ${message}`.trim();
   const isExternalHook =
     hookExternalContentSource !== undefined || isExternalHookSession(baseSessionKey);
