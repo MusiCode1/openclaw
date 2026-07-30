@@ -3582,6 +3582,27 @@ describe("ci workflow guards", () => {
     );
   });
 
+  it("serializes macOS Swift tests only on hosted dispatches and retries", () => {
+    const workflow = readCiWorkflow();
+    const macosSwift = workflow.jobs["macos-swift"];
+    const testStep = macosSwift.steps.find((step: WorkflowStep) => step.name === "Swift test");
+
+    expect(macosSwift.env.SWIFT_TEST_EXECUTION).toBe(
+      "${{ (github.event_name == 'workflow_dispatch' || github.run_attempt > 1) && 'serial' || 'parallel' }}",
+    );
+    expect(testStep.run).toContain(
+      "swift_test_args=(--package-path apps/macos --enable-code-coverage)",
+    );
+    expect(testStep.run).toContain('if [[ "$SWIFT_TEST_EXECUTION" == "parallel" ]]');
+    expect(testStep.run).toContain("swift_test_args+=(--parallel)");
+    expect(testStep.run).toContain("else\n  swift_test_args+=(--no-parallel)");
+    expect(testStep.run).toContain('swift test "${swift_test_args[@]}"');
+    expect(testStep.run).not.toContain(
+      "swift test --package-path apps/macos --parallel --enable-code-coverage",
+    );
+    expect(testStep.run).toContain("for attempt in 1 2 3");
+  });
+
   it("bounds the Windows Crabbox hydrate main fetch", () => {
     const workflow = readFileSync(".github/workflows/crabbox-hydrate.yml", "utf8");
 
@@ -4852,7 +4873,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(qaEvidenceWorkflow.on.workflow_dispatch.inputs.qa_profile).not.toHaveProperty("options");
     expect(qaEvidenceWorkflow.on.workflow_dispatch.inputs.qa_profile.default).toBe("all");
     expect(qaEvidenceWorkflow.on.workflow_call.inputs.qa_profile.type).toBe("string");
-    expect(qaRunJob["timeout-minutes"]).toBe(60);
+    expect(qaRunJob["timeout-minutes"]).toBe(90);
     const validateProfileStep = qaRunJob.steps.find(
       (step: WorkflowStep) => step.name === "Validate QA profile input",
     );

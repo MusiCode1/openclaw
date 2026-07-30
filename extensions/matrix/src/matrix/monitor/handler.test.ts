@@ -26,6 +26,10 @@ import {
 import type { MatrixRawEvent } from "./types.js";
 import { EventType } from "./types.js";
 
+// Core owns the shared gate (DEFAULT_PROGRESS_DRAFT_INITIAL_DELAY_MS); plugins
+// cannot import it, so mirror the value here for start-boundary assertions.
+const PROGRESS_DRAFT_START_DELAY_MS = 1_500;
+
 const sendMessageMatrixMock = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => ({ messageId: "evt", roomId: "!room" })),
 );
@@ -2979,6 +2983,28 @@ describe("matrix monitor handler draft streaming", () => {
     return { dispatch, redactEventMock };
   }
 
+  it("shares first-reply state between tool and final Matrix deliveries", async () => {
+    const { dispatch } = createStreamingHarness({ replyToMode: "first", streaming: "off" });
+    const { deliver, finish } = await dispatch();
+
+    await deliver({ text: "tool result", replyToId: "$msg1" }, { kind: "tool" });
+    await deliver({ text: "final result" }, { kind: "final" });
+
+    expect(deliverMatrixRepliesMock).toHaveBeenCalledTimes(2);
+    const toolDelivery = requireRecord(
+      callArg(deliverMatrixRepliesMock, 0, 0, "Matrix tool reply"),
+      "Matrix tool reply",
+    );
+    const finalDelivery = requireRecord(
+      callArg(deliverMatrixRepliesMock, 1, 0, "Matrix final reply"),
+      "Matrix final reply",
+    );
+    expect(toolDelivery.hasRepliedRef).toEqual({ value: false });
+    expect(finalDelivery.hasRepliedRef).toBe(toolDelivery.hasRepliedRef);
+
+    await finish();
+  });
+
   it("finalizes a single quiet-preview block in place when block streaming is enabled", async () => {
     const { dispatch, redactEventMock } = createStreamingHarness({ blockStreamingEnabled: true });
     const { deliver, opts, finish } = await dispatch();
@@ -3864,7 +3890,9 @@ describe("matrix monitor handler draft streaming", () => {
 
       await opts.onQueuedFollowupAdmitted?.();
       await opts.onToolStart?.({ name: "exec" });
-      await vi.advanceTimersByTimeAsync(4_999);
+      // Mirrors DEFAULT_PROGRESS_DRAFT_INITIAL_DELAY_MS: the followup draft must
+      // wait out a fresh gate instead of inheriting the primary turn's timer.
+      await vi.advanceTimersByTimeAsync(PROGRESS_DRAFT_START_DELAY_MS - 1);
       expect(sendSingleTextMessageMatrixMock).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(1);
