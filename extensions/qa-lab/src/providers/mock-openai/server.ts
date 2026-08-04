@@ -21,6 +21,7 @@ import {
   resolveProviderVariant,
   type MockOpenAiRequestSnapshot,
   type MockOpenAiRequestSnapshotInput,
+  type MockOpenAiRequestKind,
   type AnthropicMessagesRequest,
   TINY_PNG_BASE64,
   QA_REASONING_ONLY_RECOVERY_PROMPT_RE,
@@ -64,7 +65,6 @@ import {
   QA_SUBAGENT_DIRECT_FALLBACK_MARKER,
   QA_SUBAGENT_TERMINAL_MARKERS,
   QA_SUBAGENT_TERMINAL_METADATA_SENTINEL,
-  QA_SUBAGENT_TERMINAL_WORKER_DELAY_MS,
   QA_NATIVE_STOP_DELAY_PROMPT_RE,
   QA_NATIVE_STOP_DELAY_MS,
   QA_IMAGE_GENERATION_PROMPT_RE,
@@ -172,6 +172,62 @@ import {
   isSnackRecallPrompt,
   extractSnackPreference,
 } from "./mock-openai-tooling.js";
+
+const QA_COMPACTION_RETRY_PROMPT_RE = /compaction retry mutating tool check/i;
+const QA_COMPACTION_SUMMARY_INSTRUCTIONS_RE =
+  /context summarization assistant[\s\S]*structured summary[\s\S]*do not continue/i;
+const QA_COMPACTION_RETRY_OVERFLOW_THRESHOLD_BYTES = 256 * 1024;
+const QA_COMPACTION_RETRY_DURABLE_MARKER = "QA-COMPACTION-DURABLE-MARKER";
+const QA_COMPACTION_RETRY_BULKY_MARKER = "QA-COMPACTION-BULKY-HISTORICAL-MARKER";
+const QA_COMPACTION_RETRY_SUMMARY = `## Goal
+Complete the compaction retry mutating tool check.
+
+## Constraints & Preferences
+- Preserve ${QA_COMPACTION_RETRY_DURABLE_MARKER}.
+
+## Progress
+### Done
+- [x] Historical context compacted after overflow.
+
+### In Progress
+- [ ] Write compaction-retry-summary.txt exactly once.
+
+### Blocked
+- (none)
+
+## Key Decisions
+- **Retry once**: Continue from compacted context without replaying a completed mutation.
+
+## Next Steps
+1. Write the required file.
+2. Return the final replay-safety marker.
+
+## Critical Context
+- ${QA_COMPACTION_RETRY_DURABLE_MARKER}`;
+const QA_GENERIC_COMPACTION_SUMMARY = `## Goal
+Preserve the active conversation context.
+
+## Constraints & Preferences
+- Keep current requirements and identifiers.
+
+## Progress
+### Done
+- [x] Historical context summarized.
+
+### In Progress
+- [ ] Continue the active task.
+
+### Blocked
+- (none)
+
+## Key Decisions
+- **Continue from summary**: Do not restart completed work.
+
+## Next Steps
+1. Continue the active task from the retained context.
+
+## Critical Context
+- Refer to the retained recent turns for current task details.`;
 
 const QA_STREAMING_TOOL_PROGRESS_FAMILY_PROMPT_RE =
   /(?:partial|quiet) streaming qa check|final-only marker streaming qa check|block streaming qa check|tool progress(?: error)? qa check/i;
@@ -468,14 +524,102 @@ function extractScenarioPlannedTool(events: StreamEvent[]) {
     : { name: wireName, args: wireArgs, wireName };
 }
 
+type TerminalRequesterSettleGate = {
+  markSettled: (caseName: string, childSessionKey: string) => void;
+  waitUntilSettled: (caseName: string, childSessionKey: string) => Promise<void>;
+};
+
+function createTerminalRequesterSettleGate(): TerminalRequesterSettleGate {
+  const settledChildren = new Set<string>();
+  const waiterPromises = new Map<string, Promise<void>>();
+  const waiters = new Map<string, () => void>();
+  const childKey = (caseName: string, childSessionKey: string) => `${caseName}\n${childSessionKey}`;
+  return {
+    markSettled(caseName, childSessionKey) {
+      const key = childKey(caseName, childSessionKey);
+      settledChildren.add(key);
+      waiters.get(key)?.();
+    },
+    async waitUntilSettled(caseName, childSessionKey) {
+      const key = childKey(caseName, childSessionKey);
+      if (settledChildren.has(key)) {
+        return;
+      }
+      const existing = waiterPromises.get(key);
+      if (existing) {
+        return await existing;
+      }
+      const promise = new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          waiters.delete(key);
+          waiterPromises.delete(key);
+          reject(new Error(`terminal requester did not settle: ${caseName} (${childSessionKey})`));
+        }, 30_000);
+        const finish = () => {
+          clearTimeout(timeout);
+          waiters.delete(key);
+          waiterPromises.delete(key);
+          resolve();
+        };
+        waiters.set(key, finish);
+      });
+      waiterPromises.set(key, promise);
+      await promise;
+    },
+  };
+}
+
+function resolveQaRuntimeSessionId(input: ResponsesInputItem[], body: Record<string, unknown>) {
+  return /\bRuntime:\s*[^\n]*\bsessionId=([^\s|]+)/u.exec(extractAllRequestTexts(input, body))?.[1];
+}
+
+function normalizeResponsesInput(value: unknown): ResponsesInputItem[] {
+  if (Array.isArray(value)) {
+    return value as ResponsesInputItem[];
+  }
+  if (typeof value === "string") {
+    return [{ role: "user", content: [{ type: "input_text", text: value }] }];
+  }
+  return [];
+}
+
+function resolveQaChildSessionKey(input: ResponsesInputItem[], body: Record<string, unknown>) {
+  const systemPrompt = extractAllRequestTexts(
+    input.filter((item) => item.role === "developer" || item.role === "system"),
+    body,
+  );
+  return /^- Your session:\s*(.+?)\.\s*$/mu.exec(systemPrompt)?.[1]?.trim();
+}
+
+function resolveAcceptedChildSessionKey(input: ResponsesInputItem[]) {
+  const output = parseToolOutputJson(extractToolOutput(input));
+  return output?.status === "accepted" && typeof output.childSessionKey === "string"
+    ? output.childSessionKey.trim() || undefined
+    : undefined;
+}
+
+function classifyMockOpenAiRequest(
+  input: ResponsesInputItem[],
+  body: Record<string, unknown>,
+): MockOpenAiRequestKind {
+  if (QA_COMPACTION_SUMMARY_INSTRUCTIONS_RE.test(extractInstructionsText(body))) {
+    return "compaction-summary";
+  }
+  return hasToolOutput(input) ? "tool-continuation" : "agent-initial";
+}
+
 async function buildResponsesPayload(
   body: Record<string, unknown>,
   scenarioState: MockScenarioState,
+  options: {
+    waitForTerminalRequesterSettled?: (caseName: string, childSessionKey: string) => Promise<void>;
+    requestKind?: MockOpenAiRequestKind;
+  } = {},
 ) {
   const providerVariant = resolveProviderVariant(
     typeof body.model === "string" ? body.model : undefined,
   );
-  const input = Array.isArray(body.input) ? (body.input as ResponsesInputItem[]) : [];
+  const input = normalizeResponsesInput(body.input);
   const toolDeclarationBody = resolveCurrentToolDeclarationSurface(body, input);
   const prompt = extractLastUserText(input);
   const hasCompletedToolOutput = hasToolOutput(input);
@@ -498,6 +642,29 @@ async function buildResponsesPayload(
   const buildToolCallEventsWithArgs = (name: string, args: Record<string, unknown>) =>
     buildScenarioToolCallEvents(toolDeclarationBody, name, args);
   const allInputText = extractAllRequestTexts(input, body);
+  const hasCompactionRetryDurableContext = allInputText.includes(
+    QA_COMPACTION_RETRY_DURABLE_MARKER,
+  );
+  const hasCompactionRetryMarker =
+    QA_COMPACTION_RETRY_PROMPT_RE.test(allInputText) ||
+    hasCompactionRetryDurableContext ||
+    allInputText.includes(QA_COMPACTION_RETRY_BULKY_MARKER);
+  const requestKind = options.requestKind ?? classifyMockOpenAiRequest(input, body);
+  if (requestKind === "compaction-summary") {
+    return buildAssistantEvents(
+      hasCompactionRetryDurableContext
+        ? QA_COMPACTION_RETRY_SUMMARY
+        : QA_GENERIC_COMPACTION_SUMMARY,
+    );
+  }
+  if (
+    QA_COMPACTION_RETRY_PROMPT_RE.test(allInputText) ||
+    /compaction-retry-summary\.txt/i.test(toolOutput)
+  ) {
+    scenarioState.compactionRetryActive = true;
+  }
+  const compactionRetryScenarioActive =
+    scenarioState.compactionRetryActive || hasCompactionRetryMarker;
   const scenarioToolOutput =
     toolOutput ||
     (/thread memory check|session memory ranking check|memory tools check|repo contract followthrough check/i.test(
@@ -512,6 +679,18 @@ async function buildResponsesPayload(
     hasToolDefinition(toolDeclarationBody, "wait")
   ) {
     return buildRawToolCallEventsWithArgs("wait", { runId: codeModeControlJson.runId });
+  }
+  if (compactionRetryScenarioActive) {
+    if (isCanonicalCompactionRetryWriteResult(toolOutput)) {
+      return buildAssistantEvents(QA_COMPACTION_RETRY_FINAL_MARKER);
+    }
+    if (!hasCompletedToolOutput) {
+      return buildToolCallEventsWithArgs("write", {
+        path: "compaction-retry-summary.txt",
+        content: "Replay safety: unsafe after write.\n",
+      });
+    }
+    return buildAssistantEvents("");
   }
   const memoryToolUnavailable =
     toolJson?.unavailable === true ||
@@ -778,7 +957,10 @@ async function buildResponsesPayload(
     .at(-1)?.[1]
     ?.toLowerCase();
   if (terminalWorkerCase) {
-    await sleep(QA_SUBAGENT_TERMINAL_WORKER_DELAY_MS);
+    const childSessionKey = resolveQaChildSessionKey(input, body);
+    if (options.waitForTerminalRequesterSettled && childSessionKey) {
+      await options.waitForTerminalRequesterSettled(terminalWorkerCase, childSessionKey);
+    }
   }
   if (terminalWorkerCase === "silent") {
     return buildAssistantEvents("NO_REPLY");
@@ -1469,24 +1651,6 @@ async function buildResponsesPayload(
       });
     }
   }
-  if (
-    /compaction retry mutating tool check/i.test(allInputText) ||
-    /compaction retry evidence/i.test(toolOutput) ||
-    /compaction-retry-summary\.txt/i.test(toolOutput)
-  ) {
-    if (isCanonicalCompactionRetryWriteResult(toolOutput)) {
-      return buildAssistantEvents(QA_COMPACTION_RETRY_FINAL_MARKER);
-    }
-    if (!hasCompletedToolOutput) {
-      return buildToolCallEventsWithArgs("read", { path: "COMPACTION_RETRY_CONTEXT.md" });
-    }
-    if (toolOutput.includes("compaction retry evidence")) {
-      return buildToolCallEventsWithArgs("write", {
-        path: "compaction-retry-summary.txt",
-        content: "Replay safety: unsafe after write.\n",
-      });
-    }
-  }
   if (/memory tools check/i.test(allInputText)) {
     if (!scenarioToolOutput) {
       return buildToolCallEventsWithArgs("memory_search", {
@@ -1931,25 +2095,25 @@ export async function startQaMockOpenAiServer(params?: {
 }) {
   const host = params?.host ?? "127.0.0.1";
   const finalOnlyMarkerPauseMs = params?.finalOnlyMarkerPauseMs ?? 1_500;
+  const terminalRequesterSettleGate = createTerminalRequesterSettleGate();
   const scenarioStates = new Map<string, MockScenarioState>();
   const scenarioStateFor = (body: Record<string, unknown>): MockScenarioState => {
-    const input = Array.isArray(body.input)
-      ? body.input
-      : convertAnthropicMessagesToResponsesInput({
-          system: body.system as AnthropicMessagesRequest["system"],
-          messages: [],
-        });
-    const systemPrompt = extractAllRequestTexts(
-      input.filter((item) => item.role === "developer" || item.role === "system"),
-      body,
-    );
+    const input =
+      typeof body.input === "string" || Array.isArray(body.input)
+        ? normalizeResponsesInput(body.input)
+        : convertAnthropicMessagesToResponsesInput({
+            system: body.system as AnthropicMessagesRequest["system"],
+            messages: [],
+          });
     const sessionId =
-      /\bRuntime:\s*[^\n]*\bsessionId=([^\s|]+)/u.exec(systemPrompt)?.[1] ??
+      resolveQaRuntimeSessionId(input, body) ??
       (body.client_metadata as { session_id?: unknown } | undefined)?.session_id;
     const key = typeof sessionId === "string" ? sessionId : "";
     // Runtime session identity survives provider switches and cache-boundary changes.
     const state = scenarioStates.get(key) ?? {
       anthropicThinkingErrorScenarioKeys: new Set<string>(),
+      compactionOverflowInjected: false,
+      compactionRetryActive: false,
       subagentFanoutCompletedWorkers: new Set<"alpha" | "beta">(),
       subagentFanoutPhase: 0,
       subagentHandoffSpawned: false,
@@ -1977,25 +2141,20 @@ export async function startQaMockOpenAiServer(params?: {
     body: Record<string, unknown>;
     raw: string;
   }): Promise<QaMockResponsesDispatchResult> => {
-    const input = Array.isArray(request.body.input)
-      ? (request.body.input as ResponsesInputItem[])
-      : [];
+    const input = normalizeResponsesInput(request.body.input);
     if (isRemoteCompactionV2Request(input)) {
       return { events: buildRemoteCompactionV2Events() };
     }
     const prompt = extractLastUserText(input);
     const allInputText = extractAllRequestTexts(input, request.body);
-    const inflightRequestId = nextInflightRequestId++;
-    inflightRequests.set(inflightRequestId, { prompt, allInputText });
-    let events: StreamEvent[];
-    try {
-      events = await buildResponsesPayload(request.body, scenarioStateFor(request.body));
-    } finally {
-      inflightRequests.delete(inflightRequestId);
+    const scenarioState = scenarioStateFor(request.body);
+    const requestKind = classifyMockOpenAiRequest(input, request.body);
+    if (requestKind !== "compaction-summary" && QA_COMPACTION_RETRY_PROMPT_RE.test(allInputText)) {
+      scenarioState.compactionRetryActive = true;
     }
+    const rawByteLength = Buffer.byteLength(request.raw);
     const resolvedModel = typeof request.body.model === "string" ? request.body.model : "";
-    const plannedTool = extractScenarioPlannedTool(events);
-    recordRequest({
+    const requestSnapshotBase = {
       raw: request.raw,
       body: request.body,
       prompt,
@@ -2005,6 +2164,79 @@ export async function startQaMockOpenAiServer(params?: {
       model: resolvedModel,
       providerVariant: resolveProviderVariant(resolvedModel),
       imageInputCount: countImageInputs(input),
+      requestKind,
+      rawByteLength,
+    } satisfies Omit<
+      MockOpenAiRequestSnapshotInput,
+      | "outcome"
+      | "errorCode"
+      | "plannedToolCallId"
+      | "plannedToolName"
+      | "plannedWireToolName"
+      | "plannedToolArgs"
+      | "toolOutputCallId"
+      | "toolOutputStructuredError"
+    >;
+    if (
+      requestKind === "agent-initial" &&
+      QA_COMPACTION_RETRY_PROMPT_RE.test(allInputText) &&
+      rawByteLength > QA_COMPACTION_RETRY_OVERFLOW_THRESHOLD_BYTES &&
+      !scenarioState.compactionOverflowInjected
+    ) {
+      scenarioState.compactionOverflowInjected = true;
+      recordRequest({
+        ...requestSnapshotBase,
+        outcome: "error",
+        errorCode: "context_length_exceeded",
+      });
+      return {
+        events: [],
+        failure: {
+          status: 400,
+          type: "invalid_request_error",
+          code: "context_length_exceeded",
+          message: "This model's maximum context length was exceeded.",
+        },
+      };
+    }
+    const inflightRequestId = nextInflightRequestId++;
+    inflightRequests.set(inflightRequestId, { prompt, allInputText });
+    let events: StreamEvent[];
+    try {
+      events = await buildResponsesPayload(request.body, scenarioState, {
+        waitForTerminalRequesterSettled: terminalRequesterSettleGate.waitUntilSettled,
+        requestKind,
+      });
+    } finally {
+      inflightRequests.delete(inflightRequestId);
+    }
+    const plannedTool = extractScenarioPlannedTool(events);
+    const terminalRequesterCase = extractLastMatchingUserTurn(
+      input,
+      QA_SUBAGENT_TERMINAL_MATRIX_PROMPT_RE,
+    )
+      ?.text.match(QA_SUBAGENT_TERMINAL_MATRIX_PROMPT_RE)?.[1]
+      ?.toLowerCase();
+    const settledTerminalRequester =
+      terminalRequesterCase && resolveQaRuntimeSessionId(input, request.body)
+        ? {
+            caseName: terminalRequesterCase,
+            childSessionKey: resolveAcceptedChildSessionKey(input),
+          }
+        : undefined;
+    const settledTerminalCaseName = settledTerminalRequester?.caseName;
+    const settledChildSessionKey = settledTerminalRequester?.childSessionKey;
+    const failure =
+      QA_PROVIDER_HTTP_503_AFTER_TOOL_PROMPT_RE.test(allInputText) && hasToolOutput(input)
+        ? {
+            status: 503,
+            type: "server_error",
+            message: "Service Unavailable",
+          }
+        : undefined;
+    recordRequest({
+      ...requestSnapshotBase,
+      outcome: failure ? "error" : "success",
       plannedToolCallId: extractPlannedToolCallId(events),
       plannedToolName: plannedTool.name,
       ...(plannedTool.wireName && plannedTool.wireName !== plannedTool.name
@@ -2016,15 +2248,16 @@ export async function startQaMockOpenAiServer(params?: {
     });
     return {
       events,
-      ...(QA_PROVIDER_HTTP_503_AFTER_TOOL_PROMPT_RE.test(allInputText) && hasToolOutput(input)
+      ...(settledTerminalCaseName && settledChildSessionKey
         ? {
-            failure: {
-              status: 503,
-              type: "server_error",
-              message: "Service Unavailable",
-            },
+            onResponseSent: () =>
+              terminalRequesterSettleGate.markSettled(
+                settledTerminalCaseName,
+                settledChildSessionKey,
+              ),
           }
         : {}),
+      ...(failure ? { failure } : {}),
       ...(QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE.test(allInputText)
         ? { previewPauseMs: finalOnlyMarkerPauseMs }
         : {}),
@@ -2161,7 +2394,7 @@ export async function startQaMockOpenAiServer(params?: {
           writeOpenAiMalformedJsonError(res, "OpenAI Responses");
           return;
         }
-        const input = Array.isArray(body.input) ? (body.input as ResponsesInputItem[]) : [];
+        const input = normalizeResponsesInput(body.input);
         if (isRemoteCompactionV2Request(input)) {
           const events = buildRemoteCompactionV2Events();
           if (body.stream === false) {
@@ -2176,6 +2409,7 @@ export async function startQaMockOpenAiServer(params?: {
           writeJson(res, dispatched.failure.status, {
             error: {
               type: dispatched.failure.type,
+              ...(dispatched.failure.code ? { code: dispatched.failure.code } : {}),
               message: dispatched.failure.message,
             },
           });
@@ -2189,6 +2423,7 @@ export async function startQaMockOpenAiServer(params?: {
             return;
           }
           writeJson(res, 200, completion.response);
+          dispatched.onResponseSent?.();
           return;
         }
         if (dispatched.previewPauseMs !== undefined) {
@@ -2196,6 +2431,7 @@ export async function startQaMockOpenAiServer(params?: {
         } else {
           writeSse(res, events);
         }
+        dispatched.onResponseSent?.();
         return;
       }
       if (req.method === "POST" && url.pathname === "/v1/messages") {
@@ -2235,6 +2471,9 @@ export async function startQaMockOpenAiServer(params?: {
           model: normalizedModel,
           providerVariant: resolveProviderVariant(normalizedModel),
           imageInputCount: countImageInputs(input),
+          requestKind: classifyMockOpenAiRequest(input, body as Record<string, unknown>),
+          outcome: "success",
+          rawByteLength: Buffer.byteLength(raw),
           plannedToolCallId: extractPlannedToolCallId(events),
           plannedToolName: plannedTool.name,
           ...(plannedTool.wireName && plannedTool.wireName !== plannedTool.name
