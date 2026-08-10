@@ -1802,6 +1802,8 @@ public struct WorkerEnvironmentMetadata: Codable, Sendable {
     public let idlems: Int?
     public let attachedsessionids: [String]
     public let tunnelstatus: WorkerTunnelStatus
+    public let error: String?
+    public let desktop: Bool?
 
     public init(
         providerid: String,
@@ -1810,7 +1812,9 @@ public struct WorkerEnvironmentMetadata: Codable, Sendable {
         agems: Int,
         idlems: Int? = nil,
         attachedsessionids: [String],
-        tunnelstatus: WorkerTunnelStatus)
+        tunnelstatus: WorkerTunnelStatus,
+        error: String? = nil,
+        desktop: Bool? = nil)
     {
         self.providerid = providerid
         self.leaseid = leaseid
@@ -1819,6 +1823,8 @@ public struct WorkerEnvironmentMetadata: Codable, Sendable {
         self.idlems = idlems
         self.attachedsessionids = attachedsessionids
         self.tunnelstatus = tunnelstatus
+        self.error = error
+        self.desktop = desktop
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1829,6 +1835,8 @@ public struct WorkerEnvironmentMetadata: Codable, Sendable {
         case idlems = "idleMs"
         case attachedsessionids = "attachedSessionIds"
         case tunnelstatus = "tunnelStatus"
+        case error
+        case desktop
     }
 }
 
@@ -2035,6 +2043,54 @@ public struct EnvironmentsStatusResult: Codable, Sendable {
         case status
         case capabilities
         case worker
+    }
+}
+
+public struct WorkerDesktopObserveParams: Codable, Sendable {
+    public let environmentid: String
+    public let control: Bool?
+
+    public init(
+        environmentid: String,
+        control: Bool? = nil)
+    {
+        self.environmentid = environmentid
+        self.control = control
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case environmentid = "environmentId"
+        case control
+    }
+}
+
+public struct WorkerDesktopObserveResult: Codable, Sendable {
+    public let transport: String
+    public let wspath: String
+    public let expiresatms: Int
+    public let control: Bool
+    public let vncpassword: String?
+
+    public init(
+        transport: String,
+        wspath: String,
+        expiresatms: Int,
+        control: Bool,
+        vncpassword: String? = nil)
+    {
+        self.transport = transport
+        self.wspath = wspath
+        self.expiresatms = expiresatms
+        self.control = control
+        self.vncpassword = vncpassword
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case transport
+        case wspath = "wsPath"
+        case expiresatms = "expiresAtMs"
+        case control
+        case vncpassword = "vncPassword"
     }
 }
 
@@ -4612,6 +4668,70 @@ public struct SessionsCatalogArchiveResult: Codable, Sendable {
     }
 }
 
+public struct SessionsCatalogStartTerminalParams: Codable, Sendable {
+    public let catalogid: String
+    public let hostid: String?
+    public let agentid: String
+    public let cwd: String
+    public let initialmessage: String?
+
+    public init(
+        catalogid: String,
+        hostid: String? = nil,
+        agentid: String,
+        cwd: String,
+        initialmessage: String? = nil)
+    {
+        self.catalogid = catalogid
+        self.hostid = hostid
+        self.agentid = agentid
+        self.cwd = cwd
+        self.initialmessage = initialmessage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case catalogid = "catalogId"
+        case hostid = "hostId"
+        case agentid = "agentId"
+        case cwd
+        case initialmessage = "initialMessage"
+    }
+}
+
+public struct SessionsCatalogStartTerminalResult: Codable, Sendable {
+    public let sessionid: String
+    public let agentid: String
+    public let shell: String
+    public let cwd: String
+    public let confined: Bool
+    public let title: String?
+
+    public init(
+        sessionid: String,
+        agentid: String,
+        shell: String,
+        cwd: String,
+        confined: Bool,
+        title: String? = nil)
+    {
+        self.sessionid = sessionid
+        self.agentid = agentid
+        self.shell = shell
+        self.cwd = cwd
+        self.confined = confined
+        self.title = title
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionid = "sessionId"
+        case agentid = "agentId"
+        case shell
+        case cwd
+        case confined
+        case title
+    }
+}
+
 public struct SessionsCleanupParams: Codable, Sendable {
     public let agent: String?
     public let allagents: Bool?
@@ -5062,7 +5182,6 @@ public struct SessionRow: Codable, Sendable {
     public let archivedby: SessionCreatedActor?
     public let pinned: Bool?
     public let pinnedat: Double?
-    public let icon: String?
     public let unread: Bool?
     public let lastreadat: Double?
     public let lastactivityat: Double?
@@ -5125,7 +5244,6 @@ public struct SessionRow: Codable, Sendable {
         archivedby: SessionCreatedActor? = nil,
         pinned: Bool? = nil,
         pinnedat: Double? = nil,
-        icon: String? = nil,
         unread: Bool? = nil,
         lastreadat: Double? = nil,
         lastactivityat: Double? = nil,
@@ -5187,7 +5305,6 @@ public struct SessionRow: Codable, Sendable {
         self.archivedby = archivedby
         self.pinned = pinned
         self.pinnedat = pinnedat
-        self.icon = icon
         self.unread = unread
         self.lastreadat = lastreadat
         self.lastactivityat = lastactivityat
@@ -5251,7 +5368,6 @@ public struct SessionRow: Codable, Sendable {
         case archivedby = "archivedBy"
         case pinned
         case pinnedat = "pinnedAt"
-        case icon
         case unread
         case lastreadat = "lastReadAt"
         case lastactivityat = "lastActivityAt"
@@ -7672,7 +7788,6 @@ public struct SessionsPatchParams: Codable, Sendable {
     public let label: AnyCodable?
     public let category: AnyCodable?
     public let boardface: AnyCodable?
-    public let icon: AnyCodable?
     public let statusnote: AnyCodable?
     public let attention: AnyCodable?
     public let ttlminutes: Int?
@@ -7707,7 +7822,6 @@ public struct SessionsPatchParams: Codable, Sendable {
         label: AnyCodable? = nil,
         category: AnyCodable? = nil,
         boardface: AnyCodable? = nil,
-        icon: AnyCodable? = nil,
         statusnote: AnyCodable? = nil,
         attention: AnyCodable? = nil,
         ttlminutes: Int? = nil,
@@ -7741,7 +7855,6 @@ public struct SessionsPatchParams: Codable, Sendable {
         self.label = label
         self.category = category
         self.boardface = boardface
-        self.icon = icon
         self.statusnote = statusnote
         self.attention = attention
         self.ttlminutes = ttlminutes
@@ -7777,7 +7890,6 @@ public struct SessionsPatchParams: Codable, Sendable {
         case label
         case category
         case boardface = "boardFace"
-        case icon
         case statusnote = "statusNote"
         case attention
         case ttlminutes = "ttlMinutes"
@@ -7810,7 +7922,6 @@ public struct SessionsPatchMutation: Codable, Sendable {
     public let label: AnyCodable?
     public let category: AnyCodable?
     public let boardface: AnyCodable?
-    public let icon: AnyCodable?
     public let statusnote: AnyCodable?
     public let attention: AnyCodable?
     public let ttlminutes: Int?
@@ -7841,7 +7952,6 @@ public struct SessionsPatchMutation: Codable, Sendable {
         label: AnyCodable? = nil,
         category: AnyCodable? = nil,
         boardface: AnyCodable? = nil,
-        icon: AnyCodable? = nil,
         statusnote: AnyCodable? = nil,
         attention: AnyCodable? = nil,
         ttlminutes: Int? = nil,
@@ -7871,7 +7981,6 @@ public struct SessionsPatchMutation: Codable, Sendable {
         self.label = label
         self.category = category
         self.boardface = boardface
-        self.icon = icon
         self.statusnote = statusnote
         self.attention = attention
         self.ttlminutes = ttlminutes
@@ -7903,7 +8012,6 @@ public struct SessionsPatchMutation: Codable, Sendable {
         case label
         case category
         case boardface = "boardFace"
-        case icon
         case statusnote = "statusNote"
         case attention
         case ttlminutes = "ttlMinutes"
@@ -9258,15 +9366,23 @@ public struct TaskSuggestion: Codable, Sendable {
 
 public struct TaskSuggestionsAcceptParams: Codable, Sendable {
     public let taskid: String
+    public let mode: String?
+    public let cloudprofileid: String?
 
     public init(
-        taskid: String)
+        taskid: String,
+        mode: String? = nil,
+        cloudprofileid: String? = nil)
     {
         self.taskid = taskid
+        self.mode = mode
+        self.cloudprofileid = cloudprofileid
     }
 
     private enum CodingKeys: String, CodingKey {
         case taskid = "taskId"
+        case mode
+        case cloudprofileid = "cloudProfileId"
     }
 }
 
@@ -18070,21 +18186,25 @@ public struct UpdateStatusParams: Codable, Sendable {}
 public struct UpdateStatusResult: Codable, Sendable {
     public let sentinel: AnyCodable
     public let updateavailable: AnyCodable
+    public let effectivechannel: AnyCodable?
     public let schedule: UpdateScheduleState?
 
     public init(
         sentinel: AnyCodable,
         updateavailable: AnyCodable,
+        effectivechannel: AnyCodable? = nil,
         schedule: UpdateScheduleState? = nil)
     {
         self.sentinel = sentinel
         self.updateavailable = updateavailable
+        self.effectivechannel = effectivechannel
         self.schedule = schedule
     }
 
     private enum CodingKeys: String, CodingKey {
         case sentinel
         case updateavailable = "updateAvailable"
+        case effectivechannel = "effectiveChannel"
         case schedule
     }
 }
