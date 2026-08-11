@@ -49,6 +49,7 @@ export {
   filterSessionRows,
   filterVisibleSessionRows,
   getVisibleSessionRows,
+  isSystemCreatedSessionRow,
   resolveSessionNavigation,
   sessionMatchesArchivedFilter,
   scopedAgentIdForSession,
@@ -348,6 +349,7 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
           await roster.refresh({
             ...agentScope,
             includeDerivedTitles: true,
+            includeLastMessage: true,
             backgroundHydrate: true,
             force: true,
           });
