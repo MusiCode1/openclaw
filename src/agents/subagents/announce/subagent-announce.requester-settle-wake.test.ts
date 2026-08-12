@@ -23,15 +23,19 @@ let sessionStore: Record<string, { sessionId?: string; lastChannel?: string; las
 
 const { registryRuntimeMock } = vi.hoisted(() => ({
   registryRuntimeMock: {
+    countPendingDescendantRuns: vi.fn((_rootSessionKey: string) => 0),
+    isSubagentSessionRunActive: vi.fn((_childSessionKey: string) => true),
+    shouldIgnorePostCompletionAnnounceForSession: vi.fn((_childSessionKey: string) => false),
     hasDescendantRunAwaitingSettle: vi.fn(
       (_rootSessionKey: string, _excludeRunId?: string) => false,
     ),
     listSubagentRunsForRequester: vi.fn((_requesterSessionKey: string): unknown[] => []),
     getLatestSubagentRunByChildSessionKey: vi.fn((_childSessionKey: string) => undefined),
+    resolveRequesterForChildSession: vi.fn((_childSessionKey: string) => null),
   },
 }));
 
-vi.mock("../registry/subagent-registry-runtime.js", () => registryRuntimeMock);
+vi.mock("../registry/subagent-registry-read.js", () => registryRuntimeMock);
 
 vi.mock("./subagent-announce.runtime.js", () => ({
   callGateway: vi.fn(async () => ({})),
@@ -40,10 +44,10 @@ vi.mock("./subagent-announce.runtime.js", () => ({
   getRuntimeConfig: () => ({ session: { mainKey: "main", scope: "per-sender" } }),
   loadSessionStore: vi.fn(() => ({})),
   readSessionMessagesAsync: vi.fn(async () => []),
-  readSessionEntry: vi.fn(() => undefined),
+  readSubagentSessionEntry: vi.fn(() => undefined),
   resolveAgentIdFromSessionKey: vi.fn(() => "main"),
   resolveMainSessionKey: vi.fn(() => "agent:main:main"),
-  resolveStorePath: vi.fn(() => "/tmp/sessions.json"),
+  resolveSessionStorePathCore: vi.fn(() => "/tmp/sessions.json"),
   waitForEmbeddedAgentRunEnd: vi.fn(async () => true),
 }));
 

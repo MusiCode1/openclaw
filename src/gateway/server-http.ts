@@ -18,7 +18,11 @@ import {
   createDiagnosticTraceContext,
   runWithDiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
-import { isGatewayWorkAdmissionClosed } from "../process/gateway-work-admission.js";
+import {
+  getGatewaySuspendAdmissionPhase,
+  isGatewayRestartDraining,
+  isGatewayWorkAdmissionClosed,
+} from "../process/gateway-work-admission.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
@@ -31,6 +35,7 @@ import {
 import {
   CONTROL_UI_CATALOG_ICON_PATH_PREFIX,
   CONTROL_UI_PLUGIN_ICON_PATH_PREFIX,
+  CONTROL_UI_WORKSPACE_ICON_PATH_PREFIX,
 } from "./control-ui-contract.js";
 import { respondNotFound, respondPlainText } from "./control-ui-http-utils.js";
 import {
@@ -90,6 +95,7 @@ type PluginHttpRequestHandler = (
 ) => Promise<boolean>;
 
 type WatchNodeHttpRequestHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+type McpOAuthCallbackHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
 
 type PluginHttpUpgradeHandler = (
   req: IncomingMessage,
@@ -112,6 +118,9 @@ const getManagedMediaAttachmentsModule = createLazyRuntimeModule(
 );
 const getMcpAppStandaloneModule = createLazyRuntimeModule(() => import("./mcp-app-standalone.js"));
 const getPluginIconHttpModule = createLazyRuntimeModule(() => import("./plugin-icon-http.js"));
+const getWorkspaceIconHttpModule = createLazyRuntimeModule(
+  () => import("./workspace-icon-http.js"),
+);
 const getModelsHttpModule = createLazyRuntimeModule(() => import("./models-http.js"));
 const getOpenAiHttpModule = createLazyRuntimeModule(() => import("./openai-http.js"));
 const getOpenResponsesHttpModule = createLazyRuntimeModule(() => import("./openresponses-http.js"));
@@ -327,6 +336,7 @@ export function createGatewayHttpServer(opts: {
   openResponsesConfig?: import("../config/types.gateway.js").GatewayHttpResponsesConfig;
   strictTransportSecurityHeader?: string;
   handleHooksRequest: HooksRequestHandler;
+  handleMcpOAuthCallbackRequest?: McpOAuthCallbackHandler;
   handleWatchNodeRequest?: WatchNodeHttpRequestHandler;
   handlePluginRequest?: PluginHttpRequestHandler;
   shouldEnforcePluginGatewayAuth?: (pathContext: PluginRoutePathContext) => boolean;
@@ -463,10 +473,6 @@ export function createGatewayHttpServer(opts: {
               getReadiness,
             ),
         },
-        {
-          name: "hooks",
-          run: () => handleHooksRequest(req, res),
-        },
       ];
       const addRequestStage = (
         name: string,
@@ -487,6 +493,17 @@ export function createGatewayHttpServer(opts: {
         run: GatewayHttpRequestStage["run"],
       ) => addRequestStage(name, enabled, run, true);
 
+      // Before hooks: an operator hooks.path of "/oauth" would otherwise claim
+      // this exact GET and 405 every provider redirect. The claim is exact-path
+      // and config-gated, so preceding hooks cannot shadow any hook route.
+      addAdmittedStage(
+        "mcp-oauth-callback",
+        req.method === "GET" &&
+          scopedRequestPath === "/oauth/mcp/callback" &&
+          Boolean(opts.handleMcpOAuthCallbackRequest),
+        () => opts.handleMcpOAuthCallbackRequest?.(req, res) ?? false,
+      );
+      addRequestStage("hooks", true, () => handleHooksRequest(req, res));
       addAdmittedStage(
         "watch-node",
         Boolean(opts.handleWatchNodeRequest) && scopedRequestPath.startsWith("/api/nodes/watch/"),
@@ -711,6 +728,19 @@ export function createGatewayHttpServer(opts: {
             controlUiRouteOptions,
           ),
       );
+      addRequestStage(
+        "control-ui-workspace-icon",
+        controlUiEnabled &&
+          scopedRequestPath.startsWith(
+            `${controlUiRouteBasePath}${CONTROL_UI_WORKSPACE_ICON_PATH_PREFIX}/`,
+          ),
+        async () =>
+          (await getWorkspaceIconHttpModule()).handleWorkspaceIconHttpRequest(
+            req,
+            res,
+            controlUiRouteOptions,
+          ),
+      );
       addRequestStage("control-ui-assistant-media", controlUiEnabled, async () =>
         (await getControlUiModule()).handleControlUiAssistantMediaRequest(req, res, {
           ...controlUiRouteOptions,
@@ -756,7 +786,12 @@ function handleBudgetedGatewayWebSocketUpgrade(params: {
   prepareSocket?: (socket: GatewayIngressWebSocket) => void;
 }): void {
   const { req, socket, head, wss, preauthConnectionBudget, preauthBudgetKey, ingressName } = params;
-  if (isGatewayWorkAdmissionClosed()) {
+  if (
+    isGatewayWorkAdmissionClosed() &&
+    (ingressName === "Worker" ||
+      isGatewayRestartDraining() ||
+      getGatewaySuspendAdmissionPhase() !== "prepared")
+  ) {
     writeGatewayUpgradeServiceUnavailable(socket, `${ingressName} websocket admission closed`);
     socket.destroy();
     return;
@@ -936,8 +971,7 @@ export function attachGatewayUpgradeHandler(opts: {
         return;
       }
       // Plugin-owned upgrade routes have already had the opportunity to claim the socket.
-      // Core Gateway upgrades must stop at the HTTP boundary so a client cannot hold an
-      // untracked pre-connect socket after suspension or restart admission closes.
+      // Core Gateway control connections remain reachable while suspension is prepared.
       try {
         handleBudgetedGatewayWebSocketUpgrade({
           req,

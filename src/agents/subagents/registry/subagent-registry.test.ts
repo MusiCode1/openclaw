@@ -59,7 +59,7 @@ import {
   SUBAGENT_ENDED_REASON_ERROR,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
-import { countPendingDescendantRuns } from "./subagent-registry-announce-read.js";
+import { countPendingDescendantRuns } from "./subagent-registry-read.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import type {
   ContextEngineSubagentEndedParams,
@@ -100,7 +100,15 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 }
 
 const mocks = vi.hoisted(() => ({
-  callGateway: vi.fn<(request: { method?: string }) => Promise<Record<string, unknown>>>(),
+  callGateway:
+    vi.fn<
+      (request: {
+        method?: string;
+        params?: Record<string, unknown>;
+        scopes?: string[];
+        timeoutMs?: number | null;
+      }) => Promise<Record<string, unknown>>
+    >(),
   onAgentEvent: vi.fn<(_handler: (event: AgentEventPayload) => void) => typeof noop>(() => noop),
   getAgentRunContext: vi.fn<(_runId: string) => unknown>(() => undefined),
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(() => ({
@@ -114,7 +122,7 @@ const mocks = vi.hoisted(() => ({
     >;
     return store[scope.sessionKey];
   }),
-  listSessionEntries: vi.fn((scope: Omit<SessionAccessScope, "sessionKey">) => {
+  listSessionEntriesCore: vi.fn((scope: Omit<SessionAccessScope, "sessionKey">) => {
     const store = mocks.loadSessionStore(scope.storePath, { clone: false }) as Record<
       string,
       SessionEntry
@@ -122,7 +130,7 @@ const mocks = vi.hoisted(() => ({
     return Object.entries(store).map(([sessionKey, entry]) => ({ sessionKey, entry }));
   }),
   loadSessionStore: vi.fn((_storePath?: string, _options?: { clone?: boolean }) => ({})),
-  patchSessionEntry: vi.fn(
+  patchSessionEntryCore: vi.fn(
     async (
       scope: SessionAccessScope,
       update: (
@@ -197,7 +205,7 @@ const mocks = vi.hoisted(() => ({
   runSubagentEnded: vi.fn(async () => {}),
   removeInternalSessionEffectsSession: vi.fn(async () => {}),
   resolveAgentTimeoutMs: vi.fn(() => 1_000),
-  dispatchRecoveryAgent: vi.fn(async () => ({ runId: "recovered-run" })),
+  dispatchRecoveryAgent: vi.fn(),
   getGatewayRecoveryRuntime: vi.fn(() => ({
     dispatchAgent: mocks.dispatchRecoveryAgent as GatewayRecoveryRuntime["dispatchAgent"],
     waitForAgent: vi.fn(),
@@ -230,16 +238,16 @@ vi.mock("../../../config/config.js", () => {
 vi.mock("../../../config/sessions.js", () => ({
   loadSessionStore: mocks.loadSessionStore,
   resolveAgentIdFromSessionKey: mocks.resolveAgentIdFromSessionKey,
-  resolveStorePath: mocks.resolveStorePath,
+  resolveSessionStorePathCore: mocks.resolveStorePath,
   updateSessionStore: mocks.updateSessionStore,
 }));
 
 vi.mock("../../../config/sessions/session-accessor.js", () => ({
-  listSessionEntries: mocks.listSessionEntries,
-  listSessionEntriesReadOnly: mocks.listSessionEntries,
+  listSessionEntriesCore: mocks.listSessionEntriesCore,
+  listSessionEntriesReadOnly: mocks.listSessionEntriesCore,
   loadSessionEntry: mocks.loadSessionEntry,
   loadSessionEntryReadOnly: mocks.loadSessionEntry,
-  patchSessionEntry: mocks.patchSessionEntry,
+  patchSessionEntryCore: mocks.patchSessionEntryCore,
 }));
 
 vi.mock("../../../sessions/session-lifecycle-events.js", () => ({
@@ -495,7 +503,7 @@ describe("subagent registry seam flow", () => {
     mocks.runSubagentEnded.mockImplementation(async () => {
       expect(getPluginRuntimeGatewayRequestScope()?.pluginRegistry).toBe(pluginRegistry);
     });
-    mocks.dispatchRecoveryAgent.mockReset().mockResolvedValue({ runId: "recovered-run" });
+    mocks.dispatchRecoveryAgent.mockReset();
     mocks.resolveAgentTimeoutMs.mockReturnValue(1_000);
     mocks.getSubagentRunsSnapshotForChildSession
       .mockReset()
@@ -510,6 +518,14 @@ describe("subagent registry seam flow", () => {
         endedAt: 222,
       },
     });
+    mocks.dispatchRecoveryAgent.mockImplementation(async (params, timeoutMs, options) =>
+      mocks.callGateway({
+        method: "agent",
+        params: params as unknown as Record<string, unknown>,
+        timeoutMs,
+        ...(options?.scopes ? { scopes: options.scopes } : {}),
+      }),
+    );
     mod.testing.setDepsForTest({
       callGateway: mocks.callGateway as typeof import("../../../gateway/call.js").callGateway,
       captureSubagentCompletionReply: mocks.captureSubagentCompletionReply,
@@ -1046,7 +1062,7 @@ describe("subagent registry seam flow", () => {
 
   it("keeps killed session timing root-admitted after task finalization", async () => {
     let finishTiming: (() => void) | undefined;
-    mocks.patchSessionEntry.mockImplementationOnce(async () => {
+    mocks.patchSessionEntryCore.mockImplementationOnce(async () => {
       await new Promise<void>((resolve) => {
         finishTiming = resolve;
       });
@@ -4787,7 +4803,7 @@ describe("subagent registry seam flow", () => {
       timingWriteStarted = resolve;
     });
     const timingWriteFinished = new Promise<void>((resolveFinished) => {
-      mocks.patchSessionEntry.mockImplementationOnce(async (scope, update) => {
+      mocks.patchSessionEntryCore.mockImplementationOnce(async (scope, update) => {
         timingWriteStarted?.();
         await new Promise<void>((resolve) => {
           releaseTimingWrite = resolve;
@@ -4892,7 +4908,7 @@ describe("subagent registry seam flow", () => {
       ),
     ).toBe(false);
     expect(
-      mocks.patchSessionEntry.mock.calls.some(
+      mocks.patchSessionEntryCore.mock.calls.some(
         ([scope]) => (scope as SessionAccessScope).sessionKey === childSessionKey,
       ),
     ).toBe(false);

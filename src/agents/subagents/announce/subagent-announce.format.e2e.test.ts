@@ -139,7 +139,7 @@ const agentSpy = vi.fn(async (_req: AgentCallRequest) => visibleAgentResponse())
 const sendSpy = vi.fn(async (_req: AgentCallRequest) => ({ runId: "send-main", status: "ok" }));
 const sessionsDeleteSpy = vi.fn((_req: AgentCallRequest) => undefined);
 const resolveAgentIdFromSessionKeySpy = vi.spyOn(configSessions, "resolveAgentIdFromSessionKey");
-const resolveStorePathSpy = vi.spyOn(configSessions, "resolveStorePath");
+const resolveStorePathSpy = vi.spyOn(configSessions, "resolveSessionStorePathCore");
 const resolveMainSessionKeySpy = vi.spyOn(configSessions, "resolveMainSessionKey");
 const callGatewaySpy = vi.spyOn(gatewayCall, "callGateway");
 const getGlobalHookRunnerSpy = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner");
@@ -182,7 +182,7 @@ const { subagentRegistryMock } = vi.hoisted(() => ({
     shouldIgnorePostCompletionAnnounceForSession: vi.fn((_sessionKey: string) => false),
     countActiveDescendantRuns: vi.fn((_sessionKey: string) => 0),
     countPendingDescendantRuns: vi.fn((_sessionKey: string) => 0),
-    countPendingDescendantRunsExcludingRun: vi.fn((_sessionKey: string, _runId: string) => 0),
+    hasDescendantRunAwaitingSettle: vi.fn((_sessionKey: string, _excludeRunId?: string) => false),
     getLatestSubagentRunByChildSessionKey: vi.fn(
       (_childSessionKey: string): MockSubagentRun | undefined => undefined,
     ),
@@ -336,6 +336,7 @@ function loadSessionStoreFixture(): Record<string, SessionEntry> {
 }
 
 vi.mock("../registry/subagent-registry.js", () => subagentRegistryMock);
+vi.mock("../registry/subagent-registry-read.js", () => subagentRegistryMock);
 vi.mock("../registry/subagent-registry-runtime.js", () => subagentRegistryMock);
 
 describe("subagent announce formatting", () => {
@@ -429,9 +430,9 @@ describe("subagent announce formatting", () => {
         req: Parameters<typeof gatewayCall.callGateway>[0],
       ) => (await callGatewaySpy(req)) as T,
       getRuntimeConfig: () => configOverride,
-      readSessionEntry: (_storePath, sessionKey) => loadSessionStoreFixture()[sessionKey],
+      readSubagentSessionEntry: (_storePath, sessionKey) => loadSessionStoreFixture()[sessionKey],
       resolveAgentIdFromSessionKey: () => "main",
-      resolveStorePath: () => "/tmp/sessions.json",
+      resolveSessionStorePathCore: () => "/tmp/sessions.json",
     });
     resolveAgentIdFromSessionKeySpy.mockReset().mockImplementation(() => "main");
     resolveStorePathSpy.mockReset().mockImplementation(() => "/tmp/sessions.json");
@@ -479,10 +480,11 @@ describe("subagent announce formatting", () => {
       .mockImplementation((sessionKey: string) =>
         subagentRegistryMock.countActiveDescendantRuns(sessionKey),
       );
-    subagentRegistryMock.countPendingDescendantRunsExcludingRun
+    subagentRegistryMock.hasDescendantRunAwaitingSettle
       .mockClear()
-      .mockImplementation((sessionKey: string, _runId: string) =>
-        subagentRegistryMock.countPendingDescendantRuns(sessionKey),
+      .mockImplementation(
+        (sessionKey: string, _excludeRunId?: string) =>
+          subagentRegistryMock.countPendingDescendantRuns(sessionKey) > 0,
       );
     subagentRegistryMock.getLatestSubagentRunByChildSessionKey
       .mockClear()
@@ -836,10 +838,6 @@ describe("subagent announce formatting", () => {
     });
     subagentRegistryMock.countPendingDescendantRuns.mockImplementation((sessionKey: string) =>
       sessionKey === "agent:main:main" ? 2 : 0,
-    );
-    subagentRegistryMock.countPendingDescendantRunsExcludingRun.mockImplementation(
-      (sessionKey: string, runId: string) =>
-        sessionKey === "agent:main:main" && runId === "run-direct-self-pending" ? 1 : 2,
     );
 
     const didAnnounce = await runSubagentAnnounceFlow({

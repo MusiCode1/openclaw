@@ -358,7 +358,7 @@ describe("refreshChat", () => {
     expect(requestUpdate).not.toHaveBeenCalled();
   });
 
-  it("uses startup-shipped metadata without requesting chat.metadata", async () => {
+  it("uses explicit model discovery after startup metadata", async () => {
     const startup = createDeferred<unknown>();
     const host = makeChatHost({
       hello: {
@@ -366,6 +366,16 @@ describe("refreshChat", () => {
       } as TestChatHost["hello"],
       requestHandlers: {
         "chat.startup": () => startup.promise,
+        "models.list": {
+          models: [
+            {
+              available: true,
+              id: "live-model",
+              name: "Live Model",
+              provider: "openai",
+            },
+          ],
+        },
       },
     });
 
@@ -397,14 +407,14 @@ describe("refreshChat", () => {
       expect(host.chatModelCatalog).toEqual([
         {
           available: true,
-          id: "startup-model",
-          name: "Startup Model",
+          id: "live-model",
+          name: "Live Model",
           provider: "openai",
         },
       ]),
     );
     expect(host.request).not.toHaveBeenCalledWith("chat.metadata", expect.anything());
-    expect(host.request).not.toHaveBeenCalledWith("models.list", expect.anything());
+    expect(host.request).toHaveBeenCalledWith("models.list", { view: "configured" });
     expect(host.request).not.toHaveBeenCalledWith("commands.list", expect.anything());
   });
 
@@ -547,6 +557,42 @@ describe("refreshChat", () => {
       { role: "assistant", content: [{ type: "text", text: "ready" }] },
     ]);
     expect(requestUpdate).toHaveBeenCalled();
+  });
+
+  it("keeps the routed archived descriptor when history confirms archive state", async () => {
+    const key = "agent:main:dashboard:archived";
+    const host = makeChatHost({
+      requestHandlers: {
+        "chat.history": {
+          messages: [],
+          sessionInfo: row(key, {
+            archived: true,
+            sessionId: "archived-session",
+          }),
+        },
+      },
+      sessionKey: key,
+      sessionsResult: createSessionsResult([
+        row(key, {
+          derivedTitle: "Readable archived title",
+          sessionId: "archived-session",
+        }),
+      ]),
+    });
+
+    await refreshPageChat(asChatPageHost(host), {
+      awaitHistory: true,
+      scheduleScroll: false,
+    });
+
+    expect(asChatPageHost(host).selectedChatSessionArchived).toBe(true);
+    expect(host.sessions.state.result?.sessions).toEqual([
+      expect.objectContaining({
+        key,
+        archived: true,
+        derivedTitle: "Readable archived title",
+      }),
+    ]);
   });
 
   it("keeps an active run adopted from history over newer stale catalog metadata", async () => {

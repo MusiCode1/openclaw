@@ -130,6 +130,7 @@ function createSubscriptionMock(): SubscriptionMock {
     getCurrentAttemptAssistant: () => undefined,
     getLastAssistantTextMessageIndex: () => undefined,
     getLatestMcpAppChannelView: () => undefined,
+    getLatestMcpConnectAction: () => undefined,
     toolMetas: [] as Array<{ toolName: string; meta?: string; asyncStarted?: boolean }>,
     runToolLifecycle: async <T>(toolParams: { execute: () => Promise<T> }) =>
       await toolParams.execute(),
@@ -491,8 +492,8 @@ vi.mock("../../../skills/runtime/env-overrides.js", () => ({
   applySkillEnvOverridesFromSnapshot: () => () => {},
 }));
 
-vi.mock("../../../skills/loading/workspace.js", () => ({
-  resolveSkillsPromptForRun: (...args: unknown[]) => hoisted.resolveSkillsPromptForRunMock(...args),
+vi.mock("../../../skills/loading/workspace-skill-prompt.js", () => ({
+  resolveSkillsPrompt: (...args: unknown[]) => hoisted.resolveSkillsPromptForRunMock(...args),
 }));
 
 vi.mock("../../../skills/runtime/embedded-run-entries.js", () => ({

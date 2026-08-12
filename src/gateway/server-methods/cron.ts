@@ -27,6 +27,7 @@ import { resolveCronDeliveryPreviews } from "../../cron/delivery-preview.js";
 import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-target-validation.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import { toPublicCronJob } from "../../cron/public-job.js";
+import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../../cron/scratch-contract.js";
 import { applyJobPatch } from "../../cron/service/jobs.js";
 import {
@@ -53,7 +54,7 @@ import {
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { consumeCronCreatorAuthorityGrant } from "../cron-creator-authority-grant.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
-import { loadSessionEntryReadOnly } from "../session-utils.js";
+import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import {
   assertActiveAgentRuntimeAuthority,
   hasActiveAgentRuntimeAuthority,
@@ -81,9 +82,9 @@ import { assertValidParams } from "./validation.js";
 
 type CronJobIdParams = { id?: string; jobId?: string };
 
-function resolveCronCreatorAuthorityCommitGuard(
+function resolveCronCreatorAuthorityCapture(
   callerScope: CronCallerScope | undefined,
-): (() => void) | undefined {
+): (() => CronRuntimeAuthority | undefined) | undefined {
   const grant = callerScope?.cronCreatorAuthorityGrant;
   if (!grant) {
     return undefined;
@@ -100,19 +101,6 @@ function resolveAgentRuntimeAuthorityCommitGuard(
 ): (() => void) | undefined {
   return client?.internal?.agentRuntimeIdentity && context.validateAgentRuntimeApprovalAuthority
     ? () => assertActiveAgentRuntimeAuthority(client, context)
-    : undefined;
-}
-
-function combineCronCommitGuards(
-  ...guards: Array<(() => void) | undefined>
-): (() => void) | undefined {
-  const active = guards.filter((guard): guard is () => void => guard !== undefined);
-  return active.length > 0
-    ? () => {
-        for (const guard of active) {
-          guard();
-        }
-      }
     : undefined;
 }
 
@@ -354,7 +342,7 @@ function assertCronDoesNotTargetAgentHarness(input: {
     return;
   }
 
-  const loaded = loadSessionEntryReadOnly(
+  const loaded = loadGatewaySessionEntryReadOnly(
     targetSessionKey,
     input.agentId?.trim() ? { agentId: input.agentId.trim() } : {},
   );
@@ -417,7 +405,7 @@ export const cronHandlers: GatewayRequestHandlers = {
     const sessionKey = p.sessionKey?.trim() || undefined;
     const agentId = p.agentId?.trim() || undefined;
     if (sessionKey && isAgentHarnessSessionKey(sessionKey)) {
-      const loaded = loadSessionEntryReadOnly(sessionKey, agentId ? { agentId } : {});
+      const loaded = loadGatewaySessionEntryReadOnly(sessionKey, agentId ? { agentId } : {});
       const harnessSessionError = loaded.entry
         ? resolveAgentHarnessSessionStoreEntryError(loaded.canonicalKey, loaded.entry)
         : AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE;
@@ -735,17 +723,14 @@ export const cronHandlers: GatewayRequestHandlers = {
       return;
     }
     const callerScope = readCronCallerScope(client);
-    let cronCreatorAuthorityCommitGuard: (() => void) | undefined;
+    let captureRuntimeAuthority: (() => CronRuntimeAuthority | undefined) | undefined;
     try {
-      cronCreatorAuthorityCommitGuard = resolveCronCreatorAuthorityCommitGuard(callerScope);
+      captureRuntimeAuthority = resolveCronCreatorAuthorityCapture(callerScope);
     } catch (err) {
       respondInvalidCronParams(respond, "cron.add", formatErrorMessage(err));
       return;
     }
-    const commitGuard = combineCronCommitGuards(
-      resolveAgentRuntimeAuthorityCommitGuard(client, context),
-      cronCreatorAuthorityCommitGuard,
-    );
+    const commitGuard = resolveAgentRuntimeAuthorityCommitGuard(client, context);
     const jobCreate = applyCronCreateCallerScopeDefault(candidate as CronJobCreate, callerScope);
     const cfg = context.getRuntimeConfig();
     try {
@@ -799,6 +784,7 @@ export const cronHandlers: GatewayRequestHandlers = {
       result = await context.cron.add(jobCreate, {
         enabledExplicit,
         ...(commitGuard ? { commitGuard } : {}),
+        ...(captureRuntimeAuthority ? { captureRuntimeAuthority } : {}),
         matchesExisting: (job) =>
           cronJobMatchesDeclarationScope({
             job,
@@ -893,17 +879,14 @@ export const cronHandlers: GatewayRequestHandlers = {
       expectedConfigRevision?: string;
     };
     const callerScope = readCronCallerScope(client);
-    let cronCreatorAuthorityCommitGuard: (() => void) | undefined;
+    let captureRuntimeAuthority: (() => CronRuntimeAuthority | undefined) | undefined;
     try {
-      cronCreatorAuthorityCommitGuard = resolveCronCreatorAuthorityCommitGuard(callerScope);
+      captureRuntimeAuthority = resolveCronCreatorAuthorityCapture(callerScope);
     } catch (err) {
       respondInvalidCronParams(respond, "cron.update", formatErrorMessage(err));
       return;
     }
-    const commitGuard = combineCronCommitGuards(
-      resolveAgentRuntimeAuthorityCommitGuard(client, context),
-      cronCreatorAuthorityCommitGuard,
-    );
+    const commitGuard = resolveAgentRuntimeAuthorityCommitGuard(client, context);
     const jobId = resolveCronJobId(p);
     if (!jobId) {
       respond(
@@ -1016,9 +999,13 @@ export const cronHandlers: GatewayRequestHandlers = {
                 ? { toolsAllowProvenance: callerScope.toolsAllowProvenance }
                 : {}),
               ...(commitGuard ? { commitGuard } : {}),
+              ...(captureRuntimeAuthority ? { captureRuntimeAuthority } : {}),
             }
-          : commitGuard
-            ? { commitGuard }
+          : commitGuard || captureRuntimeAuthority
+            ? {
+                ...(commitGuard ? { commitGuard } : {}),
+                ...(captureRuntimeAuthority ? { captureRuntimeAuthority } : {}),
+              }
             : undefined,
       );
     } catch (err) {
