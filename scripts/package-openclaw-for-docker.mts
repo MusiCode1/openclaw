@@ -166,7 +166,10 @@ function numericTimerValueMs(valueMs: unknown) {
   return Number.isFinite(value) ? Math.floor(value) : undefined;
 }
 
-function resolveTimerTimeoutMs(valueMs: unknown, fallbackMs: unknown = MAX_TIMER_TIMEOUT_MS) {
+function resolvePackageBuildTimeoutMs(
+  valueMs: unknown,
+  fallbackMs: unknown = MAX_TIMER_TIMEOUT_MS,
+) {
   const value = numericTimerValueMs(valueMs) ?? numericTimerValueMs(fallbackMs);
   return Math.min(Math.max(value ?? MAX_TIMER_TIMEOUT_MS, 1), MAX_TIMER_TIMEOUT_MS);
 }
@@ -175,7 +178,7 @@ function resolveOptionalTimerTimeoutMs(valueMs: unknown) {
   if (valueMs === undefined) {
     return undefined;
   }
-  return resolveTimerTimeoutMs(valueMs, 1);
+  return resolvePackageBuildTimeoutMs(valueMs, 1);
 }
 
 function readOptionValue(argv: string[], index: number, optionName: string) {
@@ -304,7 +307,7 @@ export function parseArgs(argv: string[]) {
 function run(command: string, args: string[], cwd: string, options: RunOptions = {}) {
   return new Promise<string>((resolve, reject) => {
     const resolvedTimeoutMs = resolveOptionalTimerTimeoutMs(options.timeoutMs);
-    const resolvedKillAfterMs = resolveTimerTimeoutMs(
+    const resolvedKillAfterMs = resolvePackageBuildTimeoutMs(
       options.killAfterMs,
       DEFAULT_TIMEOUT_KILL_AFTER_MS,
     );
@@ -625,6 +628,7 @@ export async function prepareBundledAiRuntimePackage(
 ) {
   const packageJsonPath = path.join(sourceDir, "package.json");
   const aiRuntimePackageJsonPath = path.join(sourceDir, "packages", "ai", "package.json");
+  const aiRuntimeSourceDir = path.dirname(aiRuntimePackageJsonPath);
   const aiRuntimePath = path.join(sourceDir, "node_modules", "@openclaw", "ai");
   const aiRuntimeBackupPath = path.join(
     sourceDir,
@@ -643,6 +647,8 @@ export async function prepareBundledAiRuntimePackage(
           DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
         ),
       }));
+  const prepareManifest = packageOptions.prepareManifest ?? (async () => false);
+  const restoreManifest = packageOptions.restoreManifest ?? (async () => false);
   const originalPackageJson = await fs.readFile(packageJsonPath, "utf8");
   let packageJson: MutableJsonRecord & {
     bundleDependencies?: unknown;
@@ -718,18 +724,40 @@ export async function prepareBundledAiRuntimePackage(
   };
 
   try {
-    await runCaptureImpl(
-      "pnpm",
-      ["--dir", "packages/ai", "pack", "--silent", "--pack-destination", outputDir],
-      sourceDir,
-      {
-        deferForwardedSignalExit: true,
-        timeoutMs: resolveTimeoutMs(
-          "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
-          DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
-        ),
-      },
-    );
+    let packError: Error | undefined;
+    await prepareManifest(aiRuntimeSourceDir);
+    try {
+      await runCaptureImpl(
+        "pnpm",
+        [
+          "--dir",
+          "packages/ai",
+          "pack",
+          "--loglevel=error",
+          "--use-stderr",
+          "--pack-destination",
+          outputDir,
+        ],
+        sourceDir,
+        {
+          deferForwardedSignalExit: true,
+          timeoutMs: resolveTimeoutMs(
+            "OPENCLAW_DOCKER_PACKAGE_PACK_TIMEOUT_MS",
+            DEFAULT_PACKAGE_PACK_TIMEOUT_MS,
+          ),
+        },
+      );
+    } catch (error) {
+      packError = toErrorObject(error, "AI runtime package failed.");
+    }
+    try {
+      await restoreManifest(aiRuntimeSourceDir);
+    } catch (restoreError) {
+      throw packError ? packagePreparationRestoreError(packError, restoreError) : restoreError;
+    }
+    if (packError) {
+      throw packError;
+    }
     packedAiTarballs = (await fs.readdir(outputDir))
       .filter(isPackedAiRuntimeTarball)
       .map((filename) => path.join(outputDir, filename));
@@ -913,7 +941,15 @@ export async function packOpenClawPackageForDocker(
   let cleanupBundledAiRuntime = async () => {};
   try {
     await cleanPackedOpenClawTarballs(outputPath);
-    cleanupBundledAiRuntime = await prepareBundledAiRuntime(sourcePath, outputPath, runCaptureImpl);
+    cleanupBundledAiRuntime = await prepareBundledAiRuntime(
+      sourcePath,
+      outputPath,
+      runCaptureImpl,
+      {
+        prepareManifest,
+        restoreManifest,
+      },
+    );
     const packArgs =
       packTool === "pnpm"
         ? ["pack", "--silent", "--config.ignore-scripts=true", "--pack-destination", outputPath]
