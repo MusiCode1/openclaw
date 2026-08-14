@@ -584,6 +584,27 @@ const CHANNEL_CONTRACT_REGISTRY_BACKED_TARGETS = [
         `src/channels/plugins/contracts/${suite}.registry-backed-shard-${shard}.contract.test.ts`,
     ),
 );
+const CHANNEL_PLUGIN_SHAPE_PARITY_TEST_TARGET =
+  "src/channels/plugins/contracts/plugin-shape.contract.test.ts";
+const CHANNEL_PLUGIN_SHAPE_PARITY_WIRING_PATHS = new Set([
+  "extensions/imessage/message-tool-api.ts",
+  "extensions/imessage/src/actions.ts",
+  "extensions/imessage/src/channel.ts",
+  "extensions/slack/message-tool-api.ts",
+  "extensions/slack/src/channel-actions.ts",
+  "extensions/slack/src/channel.ts",
+  "extensions/mattermost/gateway-auth-api.ts",
+  "extensions/mattermost/src/channel.ts",
+  "extensions/feishu/session-key-api.ts",
+  "extensions/feishu/src/channel.ts",
+  "extensions/telegram/session-key-api.ts",
+  "extensions/telegram/src/channel.ts",
+  "extensions/discord/session-key-api.ts",
+  "extensions/discord/thread-binding-api.ts",
+  "extensions/discord/src/channel.ts",
+  "extensions/matrix/thread-binding-api.ts",
+  "extensions/matrix/src/channel.ts",
+]);
 const TEST_HELPER_NORMALIZE_TEXT_TARGETS = [
   "src/auto-reply/reply/commands-status.test.ts",
   "src/auto-reply/status.test.ts",
@@ -719,7 +740,7 @@ const SOURCE_TEST_TARGETS = new Map([
   ],
   [
     "packages/memory-host-sdk/src/host/embedding-defaults.ts",
-    ["packages/memory-host-sdk/src/host/embeddings.test.ts"],
+    ["extensions/memory-core/src/memory/embeddings.test.ts"],
   ],
   ["src/auto-reply/reply/dispatch-from-config.ts", GROUP_VISIBLE_REPLY_TEST_TARGETS],
   ["src/auto-reply/reply/source-reply-delivery-mode.ts", GROUP_VISIBLE_REPLY_TEST_TARGETS],
@@ -2268,7 +2289,6 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
     ["mantis-web-ui-chat-proof-workflow", packageAcceptance, workflowGuards],
   ],
   [/^\.github\/workflows\/android-release\.yml$/u, [packageAcceptance, workflowGuards]],
-  [/^\.github\/actions\/setup-node-env\/verify-importers\.mjs$/u, [workflowGuards]],
   [/^\.github\/actions\/ensure-base-commit\/action\.yml$/u, [workflowGuards]],
   [/^tsconfig\.scripts\.json$/u, ["changed-lanes", "test-projects"]],
   [/^scripts\/test-projects\.test-support\.mts$/u, ["test-projects"]],
@@ -2352,9 +2372,9 @@ const SEMANTIC_TOOLING_TARGET_PATTERNS: Array<[RegExp, string[]]> = [
       "test/extension-import-boundaries.test.ts",
       "test/plugin-extension-import-boundary.test.ts",
       "test/architecture-smells.test.ts",
-      "test/web-provider-boundary.test.ts",
       "test/test-helper-extension-import-boundary.test.ts",
       "extension-import-boundary-checker",
+      "web-fetch-provider-boundary",
       "src/plugins/contracts/plugin-sdk-subpaths.test.ts",
     ],
   ],
@@ -3085,12 +3105,16 @@ export function resolveChangedTestTargetPlan(
   const targets = [];
   const skippedBroadFallbackPaths = [];
   for (const changedPath of executableChangedPaths) {
+    const needsPluginShapeParity = CHANNEL_PLUGIN_SHAPE_PARITY_WIRING_PATHS.has(changedPath);
     const preciseTargets = resolvePreciseChangedTestTargets(changedPath, {
       ...options,
       skipImportGraph,
     });
     if (preciseTargets) {
       targets.push(...preciseTargets);
+      if (needsPluginShapeParity) {
+        targets.push(CHANNEL_PLUGIN_SHAPE_PARITY_TEST_TARGET);
+      }
       continue;
     }
     const needsBroadFallback = shouldKeepBroadChangedRun([changedPath]) || changedLanes.lanes.all;
@@ -3103,6 +3127,9 @@ export function resolveChangedTestTargetPlan(
     }
     if (isRoutableChangedTarget(changedPath)) {
       targets.push(changedPath);
+    }
+    if (needsPluginShapeParity) {
+      targets.push(CHANNEL_PLUGIN_SHAPE_PARITY_TEST_TARGET);
     }
   }
   if (

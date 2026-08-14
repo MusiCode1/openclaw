@@ -1265,6 +1265,7 @@ function runConcurrentSchemaProbe(params: {
           ALTER TABLE worker_environments DROP COLUMN bootstrap_bundle_hash;
           ALTER TABLE worker_environments DROP COLUMN bootstrap_openclaw_version;
           ALTER TABLE worker_environments DROP COLUMN bootstrap_protocol_features_json;
+          ALTER TABLE worker_environments DROP COLUMN bootstrap_install_kind;
           ALTER TABLE worker_environments DROP COLUMN owner_epoch;
           ALTER TABLE worker_environments DROP COLUMN teardown_terminal_state;
           ALTER TABLE worker_environments DROP COLUMN ssh_host_key;
@@ -2832,6 +2833,36 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     },
   );
 
+  it("appends the same-version plugin workspace column before schema validation", () => {
+    const stateDir = createTempStateDir();
+    const env = { OPENCLAW_STATE_DIR: stateDir };
+    const databasePath = materializeCurrentStateDatabase(stateDir);
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const shippedSchema = new DatabaseSync(databasePath);
+    try {
+      shippedSchema.exec(`
+        ALTER TABLE installed_plugin_index DROP COLUMN workspace_dir;
+      `);
+      expect(readSqliteNumberPragma(shippedSchema, "user_version")).toBe(
+        OPENCLAW_STATE_SCHEMA_VERSION,
+      );
+    } finally {
+      shippedSchema.close();
+    }
+
+    const reopened = openOpenClawStateDatabase({ env });
+    const columns = reopened.db
+      .prepare("PRAGMA table_info(installed_plugin_index)")
+      .all() as Array<{
+      name: string;
+    }>;
+    expect(columns.map((column) => column.name)).toContain("workspace_dir");
+    expect(() =>
+      assertOpenClawStateDatabaseForMaintenance(reopened.db, { pathname: reopened.path }),
+    ).not.toThrow();
+  });
+
   it("installs same-version worker session tool tables before runtime schema validation", () => {
     const stateDir = createTempStateDir();
     const env = { OPENCLAW_STATE_DIR: stateDir };
@@ -4133,6 +4164,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       ALTER TABLE worker_environments DROP COLUMN bootstrap_bundle_hash;
       ALTER TABLE worker_environments DROP COLUMN bootstrap_openclaw_version;
       ALTER TABLE worker_environments DROP COLUMN bootstrap_protocol_features_json;
+      ALTER TABLE worker_environments DROP COLUMN bootstrap_install_kind;
       ALTER TABLE worker_environments DROP COLUMN owner_epoch;
       ALTER TABLE worker_environments DROP COLUMN teardown_terminal_state;
       ALTER TABLE worker_environments DROP COLUMN ssh_host_key;
@@ -4152,6 +4184,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
         "bootstrap_bundle_hash",
         "bootstrap_openclaw_version",
         "bootstrap_protocol_features_json",
+        "bootstrap_install_kind",
         "owner_epoch",
         "teardown_terminal_state",
         "ssh_host_key",
