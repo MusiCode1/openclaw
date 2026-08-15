@@ -17,6 +17,7 @@ import { maybeCompactCodexAppServerSession as maybeCompactCodexAppServerSessionI
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./config.js";
 import { buildCodexAppServerConnectionFingerprint } from "./plugin-app-cache-key.js";
 import type { CodexServerNotification } from "./protocol.js";
+import { createSandboxContext } from "./sandbox-exec-server.test-helpers.js";
 import { sessionBindingIdentity } from "./session-binding.js";
 import {
   clearCodexAppServerBindingForThread,
@@ -108,7 +109,13 @@ async function writeSupervisedTestBinding(
   });
 }
 
-function startCompaction(sessionFile: string, options: { currentTokenCount?: number } = {}) {
+function startCompaction(
+  sessionFile: string,
+  options: {
+    currentTokenCount?: number;
+    nativeToolSurface?: "unrestricted" | "host-isolated";
+  } = {},
+) {
   return maybeCompactCodexAppServerSession({
     sessionId: "session-1",
     sessionKey: "agent:main:session-1",
@@ -128,6 +135,25 @@ function startSandboxedCompaction(sessionFile: string) {
     trigger: "manual",
     config: { agents: { defaults: { sandbox: { mode: "all" } } } },
   });
+}
+
+function startRemoteExecCompaction(sessionFile: string) {
+  const params: Parameters<typeof maybeCompactCodexAppServerSession>[0] & {
+    sandbox: ReturnType<typeof createSandboxContext> & {
+      placementExecutionMode: "remote-exec";
+    };
+  } = {
+    sessionId: "session-1",
+    sessionKey: "agent:main:session-1",
+    sessionFile,
+    workspaceDir: tempDir,
+    trigger: "manual",
+    sandbox: {
+      ...createSandboxContext({}),
+      placementExecutionMode: "remote-exec",
+    },
+  };
+  return maybeCompactCodexAppServerSession(params);
 }
 
 function startNodeExecCompaction(sessionFile: string) {
@@ -206,6 +232,42 @@ describe("maybeCompactCodexAppServerSession", () => {
     expect(details.signal).toBe("thread/compact/start");
     expect(details.pending).toBe(false);
     expect(details.completed).toBe(true);
+  });
+
+  it("does not compact a thread created with restricted native authority", async () => {
+    const fake = createFakeCodexClient();
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding({ nativeToolPolicyRestricted: true });
+
+    await expect(startCompaction(sessionFile)).resolves.toMatchObject({
+      ok: true,
+      compacted: false,
+      reason: "native compaction is unavailable for a host-isolated Codex session",
+      result: {
+        details: {
+          backend: "codex-app-server",
+          skipped: true,
+          reason: "native_tool_policy_restricted",
+          expectedThreadId: "thread-1",
+        },
+      },
+    });
+    expect(fake.request).not.toHaveBeenCalled();
+  });
+
+  it("does not compact an unrestricted binding during a host-isolated operation", async () => {
+    const fake = createFakeCodexClient();
+    setCodexAppServerClientFactoryForTest(async () => fake.client);
+    const sessionFile = await writeTestBinding();
+
+    await expect(
+      startCompaction(sessionFile, { nativeToolSurface: "host-isolated" }),
+    ).resolves.toMatchObject({
+      ok: true,
+      compacted: false,
+      result: { details: { reason: "native_tool_policy_restricted" } },
+    });
+    expect(fake.request).not.toHaveBeenCalled();
   });
 
   it("compacts a warm session without displacing its independently retained sibling", async () => {
@@ -952,18 +1014,21 @@ describe("maybeCompactCodexAppServerSession", () => {
     });
   });
 
-  it("blocks native app-server compaction when the current OpenClaw session is sandboxed", async () => {
+  it("blocks native app-server compaction for configured and remote-exec sandboxes", async () => {
     const fake = createFakeCodexClient();
     setCodexAppServerClientFactoryForTest(async () => fake.client);
     const sessionFile = await writeTestBinding();
 
-    const result = requireCompactResult(await startSandboxedCompaction(sessionFile));
-
-    expect(result.ok).toBe(false);
-    expect(result.compacted).toBe(false);
-    expect(result.reason).toContain(
-      "Codex-native native compaction is unavailable because OpenClaw sandboxing is active for this session.",
-    );
+    for (const result of [
+      requireCompactResult(await startSandboxedCompaction(sessionFile)),
+      requireCompactResult(await startRemoteExecCompaction(sessionFile)),
+    ]) {
+      expect(result.ok).toBe(false);
+      expect(result.compacted).toBe(false);
+      expect(result.reason).toContain(
+        "Codex-native native compaction is unavailable because OpenClaw sandboxing is active for this session.",
+      );
+    }
     expect(fake.request).not.toHaveBeenCalled();
   });
 
