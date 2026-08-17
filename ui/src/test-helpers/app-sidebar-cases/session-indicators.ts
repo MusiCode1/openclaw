@@ -13,6 +13,35 @@ function expectEmptyLead(row: Element | null) {
 }
 
 describe("AppSidebar session indicators", () => {
+  it("renders named glyphs as strokes and keeps emoji as text", async () => {
+    const glyphKey = "agent:main:glyph";
+    const emojiKey = "agent:main:emoji";
+    const sessions = createSessionsHarness("main", [glyphKey, emojiKey]);
+    const result = sessions.sessions.state.result;
+    if (!result) {
+      throw new Error("expected session list");
+    }
+    const glyph = result.sessions.find((row) => row.key === glyphKey);
+    const emoji = result.sessions.find((row) => row.key === emojiKey);
+    if (!glyph || !emoji) {
+      throw new Error("expected icon sessions");
+    }
+    glyph.icon = "braces";
+    emoji.icon = "🦞";
+
+    const { sidebar } = await mountSidebar(
+      createGatewayHarness({} as GatewayBrowserClient).gateway,
+      sessions.sessions,
+    );
+    const glyphRow = sidebar.querySelector(`[data-session-key="${glyphKey}"]`);
+    const emojiRow = sidebar.querySelector(`[data-session-key="${emojiKey}"]`);
+
+    expect(glyphRow?.querySelector(".session-glyph__icon svg")).not.toBeNull();
+    expect(glyphRow?.querySelector(".session-glyph__emoji")).toBeNull();
+    expect(emojiRow?.querySelector(".session-glyph__emoji")?.textContent).toBe("🦞");
+    expect(emojiRow?.querySelector(".session-glyph__icon")).toBeNull();
+  });
+
   it("places Home activity in the same trailing endcap as session activity", async () => {
     const mainKey = "agent:main:main";
     const workingKey = "agent:main:working";
@@ -29,7 +58,7 @@ describe("AppSidebar session indicators", () => {
       createGatewayHarness({} as GatewayBrowserClient).gateway,
       sessions.sessions,
     );
-    sidebar.outboxCountForSession = (sessionKey) => (sessionKey === mainKey ? 2 : 0);
+    sidebar.outboxAttentionCountForSession = (sessionKey) => (sessionKey === mainKey ? 2 : 0);
     sidebar.hasSessionDraft = (sessionKey) => sessionKey === mainKey;
     sidebar.requestUpdate();
     await sidebar.updateComplete;
@@ -48,7 +77,7 @@ describe("AppSidebar session indicators", () => {
       sessionSpinner?.getAttribute("aria-label"),
     );
     expect(
-      home?.querySelector(".nav-item__state .session-row-badge--queued")?.textContent,
+      home?.querySelector(".nav-item__state .session-row-badge--attention")?.textContent,
     ).toContain("2");
     expect(home?.querySelector(".nav-item__state .session-row-badge--draft")).not.toBeNull();
   });

@@ -211,9 +211,9 @@ export async function prepareGatewayKernelState(params: {
   const channelLogs = Object.fromEntries(
     listGatewayStartupChannelPlugins().map((plugin) => [plugin.id, logChannels.child(plugin.id)]),
   ) as Record<ChannelId, ReturnType<typeof createSubsystemLogger>>;
-  const channelRuntimeEnvs = Object.fromEntries(
+  const channelRuntimeEnvs: Partial<Record<ChannelId, RuntimeEnv>> = Object.fromEntries(
     Object.entries(channelLogs).map(([id, logger]) => [id, runtimeForLogger(logger)]),
-  ) as unknown as Record<ChannelId, RuntimeEnv>;
+  );
   const listStartupChannelGatewayMethods = () => {
     const methods: string[] = [];
     for (const plugin of listGatewayStartupChannelPlugins()) {
@@ -399,7 +399,7 @@ export async function prepareGatewayKernelState(params: {
   });
   channelManager.setAutostartSuppression(opts.channelAutostartSuppression ?? null);
   const sidecarStartup = opts.sidecarStartup ?? "start";
-  const isGatewayStartupPending = () => !startupState.sidecarsReady && sidecarStartup === "start";
+  const isGatewayStartupPending = () => !startupState.sidecarsReady;
   const startupCheckerDeps = {
     startedAt: serverStartedAt,
     getStartupPending: isGatewayStartupPending,
@@ -470,6 +470,7 @@ export async function prepareGatewayKernelState(params: {
     desktopSessionRegistry,
     nodeDesktopStreamBroker,
     clients: connectionState.clients,
+    tailscaleMode,
   });
   const {
     clients,
@@ -487,6 +488,7 @@ export async function prepareGatewayKernelState(params: {
     toolEventRecipients,
     sessionEventSubscribers,
     sessionMessageSubscribers,
+    isConnectionActive,
   } = connectionState;
 
   return {
@@ -569,7 +571,9 @@ export async function prepareGatewayKernelState(params: {
     toolEventRecipients,
     sessionEventSubscribers,
     sessionMessageSubscribers,
+    isConnectionActive,
     getWorkerIngressEndpoint: transportBridge.getWorkerIngressEndpoint,
+    getTailscaleIngressEndpoint: transportBridge.getTailscaleIngressEndpoint,
     getMcpAppSandboxPort: transportBridge.getMcpAppSandboxPort,
     ensureSandboxHostPort: transportBridge.ensureSandboxHostPort,
     getPortalService: transportBridge.getPortalService,

@@ -40,6 +40,7 @@ import {
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
 import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
+import { recordAgentProvenance } from "../state/agent-provenance.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -1123,7 +1124,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.startup returns chat history with the initial agents list", async () => {
+  test("chat.startup returns chat history with the initial agents list and provenance", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       await writeGatewayConfig({
         agents: {
@@ -1135,7 +1136,7 @@ describe("gateway server chat", () => {
               "openai/gpt-main": {},
             },
           },
-          entries: { main: { default: true } },
+          entries: { main: { default: true }, research: {} },
         },
         models: {
           providers: {
@@ -1146,6 +1147,11 @@ describe("gateway server chat", () => {
           },
         },
       });
+      recordAgentProvenance(
+        "research",
+        { createdVia: "agent", creatorAgentId: "main" },
+        { nowMs: 42 },
+      );
       await connectOk(ws);
       await createSessionDir();
       const updatedAt = Date.now();
@@ -1160,7 +1166,12 @@ describe("gateway server chat", () => {
 
       const startup = await rpcReq<{
         agentsList?: {
-          agents?: Array<{ id?: string }>;
+          agents?: Array<{
+            id?: string;
+            createdVia?: string;
+            creatorAgentId?: string | null;
+            createdAt?: number;
+          }>;
           defaultId?: string | null;
           mainKey?: string | null;
         };
@@ -1176,6 +1187,13 @@ describe("gateway server chat", () => {
       expect(startup.payload?.agentsList?.defaultId).toBe("main");
       expect(startup.payload?.agentsList?.mainKey).toBe("main");
       expect(startup.payload?.agentsList?.agents?.map((agent) => agent.id)).toContain("main");
+      expect(
+        startup.payload?.agentsList?.agents?.find((agent) => agent.id === "research"),
+      ).toMatchObject({
+        createdVia: "agent",
+        creatorAgentId: "main",
+        createdAt: 42,
+      });
       expect(startup.payload?.sessionInfo).toMatchObject({
         key: "agent:main:main",
         sessionId: "sess-main",
@@ -2108,6 +2126,122 @@ describe("gateway server chat", () => {
       }, FAST_WAIT_OPTS);
     } finally {
       dispatchRelease.resolve();
+      resetDirectChatSession();
+    }
+  });
+
+  test("chat.send discards prepared inbound media when a hook blocks the turn", async () => {
+    openDirectChatSession();
+    try {
+      await writeStoredMainSession({
+        modelProvider: "test-provider",
+        model: "vision-model",
+      });
+      const context = createDirectChatContext({ getRuntimeConfig: () => ({}) });
+      const inboundDir = path.join(getMediaDir(), "inbound");
+      const inboundBaseline = new Set(await fs.readdir(inboundDir).catch(() => []));
+      // A before_agent_run block persists only the redacted reason — no media
+      // markers — so dispatch must discard the prepared refs on settle.
+      dispatchInboundMessageMock.mockImplementationOnce(async (params: unknown) => {
+        const recorder = (
+          params as {
+            replyOptions?: { userTurnTranscriptRecorder?: { markBlocked: () => void } };
+          }
+        ).replyOptions?.userTurnTranscriptRecorder;
+        recorder?.markBlocked();
+      });
+      const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+      await callDirectChat("chat.send", {
+        id: "blocked-turn-media",
+        params: makeChatSendParams({
+          message: "blocked turn with media",
+          idempotencyKey: "idem-blocked-turn-media",
+          attachments: [
+            {
+              type: "file",
+              mimeType: "text/plain",
+              fileName: "notes.txt",
+              content: Buffer.from("offloaded inbound media").toString("base64"),
+            },
+          ],
+        }),
+        client: {
+          connId: "conn-owner",
+          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+        } as never,
+        respond: ((ok, payload, error) => {
+          responses.push({ ok, payload, error });
+        }) as RespondFn,
+        context,
+      });
+      expect(responses[0]?.ok).toBe(true);
+      await waitForFast(async () => {
+        const remaining = await fs.readdir(inboundDir).catch(() => []);
+        expect(remaining.filter((name) => !inboundBaseline.has(name))).toEqual([]);
+      }, FAST_WAIT_OPTS);
+    } finally {
+      resetDirectChatSession();
+    }
+  });
+
+  test("chat.send discards prepared inbound media when setup throws before the ACK", async () => {
+    openDirectChatSession();
+    try {
+      await writeStoredMainSession({
+        modelProvider: "test-provider",
+        model: "vision-model",
+      });
+      const context = createDirectChatContext({
+        // Throwing from addChatRun exercises handleChatSendSetupError — one of
+        // the pre-persistence exits that previously leaked staged media.
+        addChatRun: vi.fn(() => {
+          throw new Error("setup exploded before ack");
+        }),
+        getRuntimeConfig: () => ({}),
+      });
+      const inboundDir = path.join(getMediaDir(), "inbound");
+      const inboundBaseline = new Set(await fs.readdir(inboundDir).catch(() => []));
+      const responses: Array<{ ok: boolean; payload?: unknown; error?: unknown }> = [];
+      await callDirectChat("chat.send", {
+        id: "setup-error-media",
+        params: makeChatSendParams({
+          message: "setup error with media",
+          idempotencyKey: "idem-setup-error-media",
+          attachments: [
+            {
+              // Non-image attachments always offload into the inbound media
+              // store during preparation; the failed send must discard them.
+              type: "file",
+              mimeType: "text/plain",
+              fileName: "notes.txt",
+              content: Buffer.from("offloaded inbound media").toString("base64"),
+            },
+          ],
+        }),
+        client: {
+          connId: "conn-owner",
+          connect: { device: { id: "dev-owner" }, scopes: ["operator.write"] },
+        } as never,
+        respond: ((ok, payload, error) => {
+          responses.push({ ok, payload, error });
+        }) as RespondFn,
+        context,
+      });
+      expect(responses).toEqual([
+        {
+          ok: false,
+          payload: expect.objectContaining({ status: "error" }),
+          error: expect.anything(),
+        },
+      ]);
+      // Prepared inbound media has no transcript reference on this exit; the
+      // admission cleanup owner must discard it or the file is orphaned
+      // forever (the inbound sweep is off unless attachments.ttlHours is set).
+      await waitForFast(async () => {
+        const remaining = await fs.readdir(inboundDir).catch(() => []);
+        expect(remaining.filter((name) => !inboundBaseline.has(name))).toEqual([]);
+      }, FAST_WAIT_OPTS);
+    } finally {
       resetDirectChatSession();
     }
   });
@@ -4614,6 +4748,85 @@ describe("gateway server chat", () => {
         expect(history.payload?.totalMessages).toBe(107);
         expect(history.payload?.completeSnapshot).toBe(true);
         expect(new Set(messages.map((message) => message["__openclaw"]?.id)).size).toBe(107);
+      } finally {
+        homeEnvSnapshot.restore();
+      }
+    });
+  });
+
+  test("chat.history deduplicates a directive-tagged local Claude delivery with managed audio", async () => {
+    await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
+      await connectOk(ws);
+      const sessionDir = await createSessionDir();
+      const sessionId = "sess-claude-cli-delivery-dedupe";
+      const cliSessionId = "5b8b202c-f6bb-4046-9475-d2f15fd07531";
+      const deliveryTimestamp = Date.parse("2026-03-26T16:29:55.500Z");
+      const homeEnvSnapshot = captureEnv(["HOME"]);
+      const homeDir = path.join(sessionDir, "home");
+      const claudeProjectsDir = path.join(homeDir, ".claude", "projects", "workspace");
+      const managedAudioUrl = "/api/chat/media/outgoing/main/claude-delivery/full";
+      await fs.mkdir(claudeProjectsDir, { recursive: true });
+      await fs.writeFile(
+        path.join(claudeProjectsDir, `${cliSessionId}.jsonl`),
+        JSON.stringify({
+          type: "assistant",
+          uuid: "assistant-delivery-ready",
+          timestamp: new Date(deliveryTimestamp).toISOString(),
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "CLAUDE DELIVERY READY" }],
+          },
+        }),
+        "utf-8",
+      );
+      setTestEnvValue("HOME", homeDir);
+      try {
+        await writeStoredMainSession(
+          makeClaudeCliSessionEntry(sessionDir, sessionId, cliSessionId),
+        );
+        await writeMainSessionTranscript(
+          [
+            createTextTranscriptEvent(
+              "assistant",
+              "[[reply_to:delivery-run-1]]CLAUDE DELIVERY READY",
+              {
+                timestamp: deliveryTimestamp,
+                message: {
+                  content: [
+                    {
+                      type: "text",
+                      text: "[[reply_to:delivery-run-1]]CLAUDE DELIVERY READY",
+                    },
+                    { type: "audio", url: managedAudioUrl, openUrl: managedAudioUrl },
+                  ],
+                },
+              },
+            ),
+          ],
+          sessionId,
+        );
+
+        const history = await rpcReq<{
+          messages?: Array<{ role?: unknown; content?: unknown }>;
+        }>(ws, "chat.history", makeMainSessionParams({ limit: 100 }));
+        expect(history.ok).toBe(true);
+        const assistantMessages = (history.payload?.messages ?? []).filter(
+          (message) => message.role === "assistant",
+        );
+        expect(assistantMessages).toHaveLength(1);
+        const survivingContent = expectDefined(
+          assistantMessages[0]?.content,
+          "surviving assistant content",
+        );
+        expect(Array.isArray(survivingContent)).toBe(true);
+        const contentBlocks = survivingContent as Array<{ type?: unknown; text?: unknown }>;
+        expect(
+          contentBlocks.filter(
+            (block) => block.type === "text" && block.text === "CLAUDE DELIVERY READY",
+          ),
+        ).toHaveLength(1);
+        expect(contentBlocks.filter((block) => block.type === "audio")).toHaveLength(1);
+        expect(JSON.stringify(assistantMessages)).not.toContain("[[reply_to:");
       } finally {
         homeEnvSnapshot.restore();
       }

@@ -12,6 +12,7 @@ import {
   renderSessionUnreadBadge,
   type SessionGlyphContent,
 } from "./session-glyph.ts";
+import { resolveSessionIconGlyph } from "./session-icon-glyph-registry.ts";
 import type { SessionPullRequestIndicatorState } from "./session-menu-work.ts";
 import { renderSessionOwnerChip, type SessionCreatedActor } from "./session-owner-chip.ts";
 
@@ -87,6 +88,13 @@ function renderSessionTrailingState(
   `;
 }
 
+function renderPersistentSessionIcon(icon: string) {
+  const glyph = resolveSessionIconGlyph(icon);
+  return glyph
+    ? html`<span class="session-glyph__icon" aria-hidden="true">${glyph}</span>`
+    : html`<span class="session-glyph__emoji" aria-hidden="true">${icon}</span>`;
+}
+
 export function describeSessionTrailingState(
   session: SidebarRecentSession,
   pullRequestState: SessionPullRequestIndicatorState,
@@ -117,12 +125,24 @@ export function renderSessionLeadingState(
   const trailingIndicator = session.isChild
     ? nothing
     : renderSessionTrailingState(session, pullRequestState);
+  // Transient attention always outranks the persistent decorative icon.
   if (session.isChild) {
     if (session.attention.kind !== "none") {
       return {
         running,
         leadingIndicator: renderSessionGlyph({
           content: renderSessionAttentionIcon(session.attention),
+          running,
+          badge: renderGlyphBadge(session, pullRequestState),
+        }),
+        trailingIndicator,
+      };
+    }
+    if (session.icon) {
+      return {
+        running,
+        leadingIndicator: renderSessionGlyph({
+          content: renderPersistentSessionIcon(session.icon),
           running,
           badge: renderGlyphBadge(session, pullRequestState),
         }),
@@ -156,6 +176,16 @@ export function renderSessionLeadingState(
       running,
       leadingIndicator: renderSessionGlyph({
         content: renderSessionAttentionIcon(session.attention),
+        running: false,
+      }),
+      trailingIndicator,
+    };
+  }
+  if (session.icon) {
+    return {
+      running,
+      leadingIndicator: renderSessionGlyph({
+        content: renderPersistentSessionIcon(session.icon),
         running: false,
       }),
       trailingIndicator,

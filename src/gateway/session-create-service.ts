@@ -228,8 +228,7 @@ export async function createGatewaySession(params: {
   key?: string;
   agentId?: string;
   label?: string;
-  /** Trusted model-generated title, persisted with a newly created dashboard session. */
-  generatedDisplayName?: string;
+  category?: string;
   model?: string;
   thinkingLevel?: string;
   /** Registry identity recorded only when this request creates a logical session node. */
@@ -292,7 +291,6 @@ export async function createGatewaySession(params: {
 }): Promise<CreateGatewaySessionResult> {
   const requestedKey = normalizeOptionalString(params.key);
   const parentSessionKey = normalizeOptionalString(params.parentSessionKey);
-  const generatedDisplayName = normalizeOptionalString(params.generatedDisplayName);
   const projectId = normalizeOptionalString(params.projectId);
   const explicitAgentId = normalizeOptionalString(params.agentId);
   const explicitKeyAgentId = parseAgentSessionKey(requestedKey)?.agentId;
@@ -968,6 +966,7 @@ export async function createGatewaySession(params: {
           patch: {
             key: target.canonicalKey,
             label: normalizeOptionalString(params.label),
+            category: normalizeOptionalString(params.category),
             model: catalogModel ?? requestedModel,
             thinkingLevel: requestedThinkingLevel,
           },
@@ -1025,7 +1024,6 @@ export async function createGatewaySession(params: {
           ...(params.creation && createdNewEntry ? buildSessionCreationStamp(params.creation) : {}),
           ...(params.visibility && createdNewEntry ? { visibility: params.visibility } : {}),
           ...(projectId && createdNewEntry ? { projectId } : {}),
-          ...(generatedDisplayName && createdNewEntry ? { displayName: generatedDisplayName } : {}),
           ...(catalogResolvedModel && catalogAgentRuntime
             ? {
                 providerOverride: catalogResolvedModel.provider,
