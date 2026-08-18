@@ -928,6 +928,7 @@ class SessionsPage extends OpenClawLightDomElement {
 
   private setGroupBy(mode: SessionsGroupBy) {
     this.groupBy = mode;
+    this.page = 0;
     saveStoredGroupBy(mode);
   }
 
@@ -1497,6 +1498,9 @@ class SessionsPage extends OpenClawLightDomElement {
               } else {
                 void this.archiveSessionWithUndo(row);
               }
+              break;
+            case "assign-owner":
+              void this.context?.sessions.assignOwner(row.key, action.owner);
               break;
             case "stop-cloud-worker":
               void this.stopCloudWorker(row);

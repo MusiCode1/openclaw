@@ -960,7 +960,7 @@ describe("handleChatGatewayEvent", () => {
     expect(state.chatMessages).toEqual([]);
   });
 
-  it("uses an already-persisted steer to recover the active stream boundary", () => {
+  it("preserves an already-recorded stream boundary for a persisted steer", () => {
     const state = createState({
       sessionKey: "main",
       chatRunId: "run-1",
@@ -995,9 +995,21 @@ describe("handleChatGatewayEvent", () => {
         },
       ],
     }) as ChatState & {
-      chatStreamSegments: Array<{ text: string; ts: number; itemId: string }>;
+      chatStreamSegments: Array<{
+        text: string;
+        ts: number;
+        itemId: string;
+        boundaryRunId: string;
+      }>;
     };
-    state.chatStreamSegments = [{ text: "Looking into it.", ts: 2, itemId: "preamble-1" }];
+    state.chatStreamSegments = [
+      {
+        text: "Looking into it.",
+        ts: 2,
+        itemId: "preamble-1",
+        boundaryRunId: "steer-send-1",
+      },
+    ];
 
     handleChatGatewayEvent(state, {
       runId: "run-1",
@@ -1012,6 +1024,47 @@ describe("handleChatGatewayEvent", () => {
     expectTextChatMessage(state.chatMessages[1], "assistant", "Looking into it.");
     expectTextChatMessage(state.chatMessages[2], "user", "Focus on deployment");
     expectTextChatMessage(state.chatMessages[3], "assistant", "Final answer.");
+  });
+
+  it("keeps a terminal-only suffix after a steer with no post-boundary delta", () => {
+    const state = createState({
+      sessionKey: "main",
+      chatRunId: "run-1",
+      chatMessages: [
+        createTextChatMessage("user", "Ask", { idempotencyKey: "run-1:user" }, 1),
+        createTextChatMessage("user", "Steer", { idempotencyKey: "steer-1:user" }, 3),
+      ],
+      chatStream: null,
+      chatStreamStartedAt: null,
+    }) as ChatState & {
+      chatStreamSegments: Array<{
+        text: string;
+        ts: number;
+        runId: string;
+        boundaryRunId: string;
+      }>;
+    };
+    state.chatStreamSegments = [
+      { text: "Before steer.", ts: 2, runId: "run-1", boundaryRunId: "steer-1" },
+    ];
+
+    handleChatGatewayEvent(state, {
+      runId: "run-1",
+      sessionKey: "main",
+      state: "final",
+      message: createTextChatMessage(
+        "assistant",
+        "Before steer. Final unseen suffix.",
+        undefined,
+        4,
+      ),
+    });
+
+    expect(state.chatMessages).toHaveLength(4);
+    expectTextChatMessage(state.chatMessages[0], "user", "Ask");
+    expectTextChatMessage(state.chatMessages[1], "assistant", "Before steer.");
+    expectTextChatMessage(state.chatMessages[2], "user", "Steer");
+    expectTextChatMessage(state.chatMessages[3], "assistant", "Final unseen suffix.");
   });
 
   it("clears keyed commentary when chatPersistCommentary is false", () => {
@@ -2844,7 +2897,7 @@ describe("loadChatHistory filtering", () => {
     ]);
   });
 
-  it("falls back to chat.history when startup history is not advertised", async () => {
+  it("requests chat.startup even when the handshake methods omit it", async () => {
     const { request, state } = createResolvedHistoryState(
       { messages: [] },
       {
@@ -2859,7 +2912,7 @@ describe("loadChatHistory filtering", () => {
 
     await loadChatHistory(state, { startup: true });
 
-    expect(request).toHaveBeenCalledWith("chat.history", {
+    expect(request).toHaveBeenCalledWith("chat.startup", {
       sessionKey: "main",
       limit: 100,
     });
@@ -2881,16 +2934,13 @@ describe("chat send Gateway requests", () => {
 });
 
 describe("loadChatHistory retry handling", () => {
-  it("falls back to chat.history when chat.startup is unknown", async () => {
-    const request = vi
-      .fn()
-      .mockRejectedValueOnce(
-        new GatewayRequestError({
-          code: "INVALID_REQUEST",
-          message: "unknown method: chat.startup",
-        }),
-      )
-      .mockResolvedValueOnce(createAssistantHistory("fallback"));
+  it("surfaces unknown chat.startup failures without requesting chat.history", async () => {
+    const request = vi.fn().mockRejectedValue(
+      new GatewayRequestError({
+        code: "INVALID_REQUEST",
+        message: "unknown method: chat.startup",
+      }),
+    );
     const state = createHistoryState(request);
 
     await loadChatHistory(state, { startup: true });
@@ -2899,13 +2949,9 @@ describe("loadChatHistory retry handling", () => {
       sessionKey: "main",
       limit: 100,
     });
-    expect(request).toHaveBeenNthCalledWith(2, "chat.history", {
-      sessionKey: "main",
-      limit: 100,
-    });
-    expect(state.chatMessages).toEqual([
-      { role: "assistant", content: [{ type: "text", text: "fallback" }] },
-    ]);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(state.lastError).toContain("unknown method: chat.startup");
+    expect(state.chatError).toContain("unknown method: chat.startup");
   });
 
   it("retries retryable startup unavailability before showing history", async () => {

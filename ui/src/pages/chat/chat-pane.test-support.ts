@@ -21,14 +21,20 @@ import type { ApplicationContext } from "../../app/context.ts";
 import { createInitialUserMessageHandoff } from "../../app/initial-user-message-handoff.ts";
 import type { CatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
-import "./chat-pane.ts";
 import type { TaskSuggestionAcceptMode } from "../../lib/task-suggestion-acceptance.ts";
+import "./chat-pane.ts";
+import {
+  gatewayHelloForMethods,
+  SESSION_MUTATION_TEST_METHODS,
+  sessionMutationGatewayHello,
+} from "../../test-helpers/gateway-methods.ts";
 import { attachChatRealtimeActions, createInitialChatRealtimeState } from "./chat-realtime.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
 import type { HeaderMenuAction } from "./components/chat-header-session-menu.ts";
 import { createSessionWorkspaceProps } from "./components/chat-session-workspace.ts";
 import type { ChatMessageCache } from "./session-message-cache.ts";
+import type { SessionSnapshotStore } from "./session-snapshot-store.ts";
 
 export type TestChatPane = HTMLElement & {
   catalogMessages: unknown[];
@@ -36,6 +42,7 @@ export type TestChatPane = HTMLElement & {
   presented: boolean;
   presentationId: string;
   chatMessagesBySession?: ChatMessageCache;
+  sessionSnapshotStore?: SessionSnapshotStore;
   chatState: { attach: (state: ChatPageHost) => void };
   context: ApplicationContext;
   state: ChatPageHost;
@@ -96,6 +103,8 @@ export type TestChatPane = HTMLElement & {
   paneId: string;
   sessionKey: string;
   updateComplete: Promise<boolean>;
+  requestUpdate: () => void;
+  performUpdate: () => void;
   deferSessionHydrationUntilTranscript: (
     sessionKey: string,
     transcriptLoad: Promise<unknown>,
@@ -135,7 +144,9 @@ export type TestChatPane = HTMLElement & {
     agentWorkspace: string | undefined,
     workspaceGit: boolean,
   ) => Promise<void>;
+  headerPlacementMovingKey: string | null;
   headerPlacementReclaimingKey: string | null;
+  moveHeaderPlacement: (row: GatewaySessionRow) => Promise<void>;
   reclaimHeaderPlacement: (row: GatewaySessionRow) => Promise<void>;
   markSessionRead: (row: GatewaySessionRow | undefined) => void;
   applySessionsState: (stateValue: ApplicationContext["sessions"]["state"]) => void;
@@ -185,11 +196,11 @@ export function createSessionContext(
       snapshot: {
         client,
         phase: "connected" as const,
-        hello: {
-          features: {
-            methods: ["taskSuggestions.list", "session.suggestions.list", "sessions.patch"],
-          },
-        },
+        hello: gatewayHelloForMethods([
+          ...SESSION_MUTATION_TEST_METHODS,
+          "taskSuggestions.list",
+          "session.suggestions.list",
+        ]),
       },
       connection: { gatewayUrl: "ws://example.test", token: "", bootstrapToken: "", password: "" },
       eventLog: [],
@@ -265,7 +276,7 @@ export function createTestChatPane(params: {
     client: params.client,
     connected: true,
     connectionEpoch: 4,
-    hello: null,
+    hello: sessionMutationGatewayHello(),
     lastError: null,
     requestUpdate,
     sessionKey: "agent:main:current",

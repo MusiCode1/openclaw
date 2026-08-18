@@ -479,6 +479,8 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     get canonicalListRevision() {
       return canonicalListRevision;
     },
+    captureConnectionScope: () => connection.capture(),
+    isConnectionScopeCurrent: (scope) => connection.isCurrent(scope),
     list: roster.list,
     listSnapshot: (scope) => roster.listSnapshot(scope),
     subscribeList(scope, listener) {
@@ -491,6 +493,7 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     },
     refreshList: (options) => roster.refreshList(options),
     setCreatorFilter: (creatorId) => roster.setCreatorFilter(creatorId),
+    setInvolvingMeFilter: (enabled) => roster.setInvolvingMeFilter(enabled),
     reconcile,
     reconcileChanged,
     reconcileRunTerminal,
@@ -500,6 +503,7 @@ export function createSessionCapability(gateway: SessionGateway): SessionCapabil
     create: mutations.create,
     recover: mutations.recover,
     patch: mutations.patch,
+    assignOwner: mutations.assignOwner,
     retireModelOverride: mutations.retireModelOverride,
     setModelOverride: mutations.setModelOverride,
     patchRowLocal: mutations.patchRowLocal,

@@ -30,6 +30,7 @@ import { WorkerRunnerCapacityError, WorkerRunnerUnavailableError } from "./tunne
 import { resolveWorkerBrowserLaunchPlan } from "./worker-browser-launch-plan.js";
 import {
   claimWorkerTurn,
+  rejectPendingWorkerResult,
   releaseClaimIfOwned,
   requireActivePlacement,
   resolvePlacementIdentity,
@@ -201,6 +202,7 @@ async function executeWorkerTurn(params: {
   const { operationalRunInstance, runtimeIdentity } = await prepareWorkerAgentRuntimeIdentity({
     agentId: placement.agentId,
     runtimeInstanceId: placement.environmentId,
+    placements: params.placements,
     sessionKey: placement.sessionKey,
     turn,
     turnClaim: params.turnClaim,
@@ -212,7 +214,7 @@ async function executeWorkerTurn(params: {
     messages: initialMessages,
     build: (agentRuntimeIdentityToken, windowedMessages) =>
       parseWorkerLaunchPlan({
-        version: 3,
+        version: 4,
         admission: {
           environmentId: placement.environmentId,
           credential: credential.credential,
@@ -230,6 +232,12 @@ async function executeWorkerTurn(params: {
           prompt: turn.prompt,
           suppressPromptTranscript: true,
           workspaceDir: placement.remoteWorkspaceDir,
+          ...(turn.permissionMode
+            ? {
+                permissionMode: turn.permissionMode,
+                workerContainmentRoot: placement.remoteWorkspaceDir,
+              }
+            : {}),
           modelRef,
           inferenceOptions: reasoning ? { reasoning } : {},
           ...(turn.extraSystemPrompt === undefined ? {} : { systemPrompt: turn.extraSystemPrompt }),
@@ -279,6 +287,9 @@ async function executeWorkerTurn(params: {
       handoffAbort.abort(handoffError);
     }
   };
+  if (!tunnel.launchTurn) {
+    throw new Error("Worker tunnel does not support worker turns");
+  }
   const processPromise = tunnel.launchTurn({
     plan,
     turnClaim: params.turnClaim,
@@ -455,6 +466,18 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
         routablePlacement = await options.redispatchReclaimed(routablePlacement);
       }
       const identity = resolvePlacementIdentity(claim, routablePlacement);
+      if (
+        routablePlacement.state === "draining" &&
+        options.placements
+          .listPendingWorkspaceResults()
+          .some((pending) => pending.sessionId === identity.sessionId)
+      ) {
+        await rejectPendingWorkerResult({
+          placements: options.placements,
+          sessionId: identity.sessionId,
+          ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
+        });
+      }
       let placement = requireActivePlacement(routablePlacement);
       // The placement owns the managed worktree. Callers can carry a default or stale
       // workspace path, but remote results must only reconcile into that canonical root.
