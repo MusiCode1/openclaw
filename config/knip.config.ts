@@ -152,7 +152,6 @@ const rootEntries = [
   // Docker/manual E2E executables and their nested assertion/probe entrypoints.
   "scripts/e2e/*.{js,mjs,ts}!",
   "scripts/e2e/lib/**/{assertions,probe,mock-server}.{js,mjs,ts}!",
-  "src/audit/audit-event-writer.worker.ts!",
   // Loaded by URL from the SQLite lifecycle archive owner.
   "src/config/sessions/session-accessor.sqlite-archive.worker.ts!",
   "src/state/openclaw-database-verify.worker.ts!",
@@ -708,6 +707,7 @@ const config = {
       // Rolldown consumes this config and its browser bootstrap entry.
       "src/host/a2ui-app/rolldown.config.mjs!",
       "src/host/a2ui-app/bootstrap.js!",
+      "src/host/a2ui-app/bootstrap-v0.9.js!",
     ]),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/cloudflare-ai-gateway`]: bundledPluginWorkspace(),
     [`${BUNDLED_PLUGIN_ROOT_DIR}/chutes`]: bundledPluginWorkspace(),
