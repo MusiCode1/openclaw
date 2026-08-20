@@ -299,6 +299,8 @@ type OpenClawCodingToolsOptions = {
   allowGatewaySubagentBinding?: boolean;
   /** Runtime-scoped explicit allowlist used to materialize matching plugin tools. */
   runtimeToolAllowlist?: string[];
+  /** Host-prepared proof that this exact session can request Gateway publication. */
+  githubPublicationAvailable?: boolean;
   /** True when runtimeToolAllowlist is real parent authority that child sessions inherit. */
   inheritRuntimeToolAllowlist?: boolean;
   /** Mutable spawn capability snapshot refreshed after late-bound runtime tools are authorized. */
@@ -592,6 +594,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
     applyPatchWorkspaceOnly,
     execDefaults: {
       ...execDefaults,
+      bypassHostApprovalFloors: sessionCoreToolPolicy?.bypassHostApprovalFloors,
       host: options?.exec?.host ?? execConfig.host,
       mode: effectiveExecPolicy.mode,
       security: effectiveExecPolicy.security,
@@ -809,6 +812,7 @@ function createOpenClawCodingToolsInternal(options?: OpenClawCodingToolsOptions)
             pluginToolAllowlist,
             pluginToolDenylist,
             runtimeToolAllowlist: options?.runtimeToolAllowlist,
+            githubPublicationAvailable: options?.githubPublicationAvailable,
             cronCreatorToolAllowlist,
             cronCreatorToolAllowlistCaptureRef,
             resolveCronCreatorToolAuthority: cronCreatorAuthorityResolver,
