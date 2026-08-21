@@ -2,6 +2,7 @@
 import { parseBoolean } from "@openclaw/normalization-core/boolean-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
+  type CronListParams,
   ErrorCodes,
   errorShape,
   GatewayErrorDetailCodes,
@@ -488,20 +489,7 @@ export const cronHandlers: GatewayRequestHandlers = {
     if (!assertValidParams(params, validateCronListParams, "cron.list", respond)) {
       return;
     }
-    const p = params as {
-      includeDisabled?: boolean;
-      limit?: number;
-      offset?: number;
-      query?: string;
-      enabled?: "all" | "enabled" | "disabled";
-      scheduleKind?: "all" | "at" | "every" | "cron";
-      lastRunStatus?: "all" | "ok" | "error" | "skipped" | "unknown";
-      sortBy?: "nextRunAtMs" | "updatedAtMs" | "name";
-      sortDir?: "asc" | "desc";
-      agentId?: string;
-      compact?: boolean;
-      includeDeliveryPreviews?: boolean;
-    };
+    const p = params as CronListParams;
     const callerScope = readCronCallerScope(client);
     const requestedAgentId = p.agentId ? normalizeAgentId(p.agentId) : undefined;
     if (callerScope && requestedAgentId && requestedAgentId !== callerScope.agentId) {
@@ -516,6 +504,7 @@ export const cronHandlers: GatewayRequestHandlers = {
       enabled: p.enabled,
       scheduleKind: p.scheduleKind,
       lastRunStatus: p.lastRunStatus,
+      trigger: p.trigger,
       sortBy: p.sortBy,
       sortDir: p.sortDir,
       agentId: callerScope?.agentId ?? p.agentId,

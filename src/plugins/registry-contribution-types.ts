@@ -236,15 +236,6 @@ export type MemoryFlushPlan = {
   prompt: string;
   systemPrompt: string;
   relativePath: string;
-  recordWriteProvenance?: (params: {
-    workspaceDir: string;
-    relativePath: string;
-    contentBefore: string;
-    contentAfter: string;
-    originClass: "agent" | "untrusted";
-    observedAt: number;
-  }) => Promise<(() => Promise<void>) | void>;
-  clearWriteProvenance?: (params: { workspaceDir: string; relativePath: string }) => Promise<void>;
 };
 
 export type MemoryFlushPlanResolver = (params: {
@@ -265,6 +256,8 @@ export type MemoryPluginRuntime = {
     cfg: OpenClawConfig;
     agentId: string;
     purpose?: "default" | "status" | "cli";
+    /** Request a read-only source freshness scan; runtimes may ignore unsupported diagnostics. */
+    inspectSources?: boolean;
   }): Promise<{
     manager: RegisteredMemorySearchManager | null;
     debug?: {

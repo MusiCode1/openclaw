@@ -30,7 +30,7 @@ const UPLOAD_ARTIFACT_V7 = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64
 const DOWNLOAD_ARTIFACT_V8 = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c";
 const CREATE_GITHUB_APP_TOKEN_V3 =
   "actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1";
-const MANTIS_ISSUE_COMMENT_REACTION_WORKFLOWS = [
+const MANTIS_MANUAL_ONLY_WORKFLOWS = [
   ".github/workflows/mantis-web-ui-chat-proof.yml",
   ".github/workflows/mantis-discord-status-reactions.yml",
   ".github/workflows/mantis-discord-thread-attachment.yml",
@@ -322,6 +322,7 @@ function runCiManifestFixture(options: {
           export const hasSqliteSessionLifecycleAffectingChange = (changedPaths) =>
             changedPaths.includes("src/sqlite-session-owner.ts") ||
             changedPaths.includes("test/scripts/sqlite-sessions-transcripts-flip-proof.built-cli.e2e.test.ts");
+          export const resolveChangedDockerSeedLanes = (changedPaths) => changedPaths.includes("scripts/e2e/docker-openai-seed.ts") ? ["mcp-channels", "cron-mcp-cleanup"] : [];
         `,
         "utf8",
       );
@@ -372,6 +373,7 @@ function runCiManifestFixture(options: {
         ...((options.openClawKitTests ?? options.bundledPlanner)
           ? ["openclawkit-tests-contract-v1"]
           : []),
+        ...(options.bundledPlanner ? ["docker-seed-e2e-contract-v1"] : []),
       ].join("\n"),
     );
     const outputPath = path.join(root, "manifest.out");
@@ -2740,6 +2742,39 @@ NODE
     expect(workflow.jobs.android.strategy["max-parallel"]).toBe(2);
   });
 
+  it("runs changed Docker seed owners in one gated scheduler job", () => {
+    const source = readFileSync(".github/workflows/ci.yml", "utf8");
+    const jobs = readCiWorkflow().jobs;
+    const job = jobs["docker-seed-e2e"];
+    expect(source).toContain("docker-seed-e2e-contract-v1");
+    expect(source).toContain(
+      'typeof changedNodeTestPlan.resolveChangedDockerSeedLanes === "function"',
+    );
+    expect(jobs.preflight.outputs).toMatchObject({
+      docker_seed_lanes: "${{ steps.manifest.outputs.docker_seed_lanes }}",
+      run_docker_seed_e2e: "${{ steps.manifest.outputs.run_docker_seed_e2e }}",
+    });
+    expect(job.if).toBe("needs.preflight.outputs.run_docker_seed_e2e == 'true'");
+    expect(job.needs).toEqual(["preflight"]);
+    expect(job["timeout-minutes"]).toBe(60);
+    expect(job.permissions).toEqual({ contents: "read" });
+    expect(job.strategy).toBeUndefined();
+    expect(job.steps[0]).toEqual(jobs["pnpm-store-warmup"].steps[0]);
+    expect(job.steps[1].uses).toBe("./.github/actions/setup-node-env");
+    const run = job.steps[2] as WorkflowStep;
+    const parallelism = run.env?.OPENCLAW_DOCKER_ALL_PARALLELISM;
+    expect(run).toMatchObject({
+      run: "pnpm test:docker:all",
+      env: {
+        OPENCLAW_DOCKER_ALL_LANES: "${{ needs.preflight.outputs.docker_seed_lanes }}",
+        OPENCLAW_DOCKER_ALL_LIVE_MODE: "skip",
+        OPENCLAW_DOCKER_E2E_ALLOW_UNRELEASED_CHANGELOG: "1",
+        OPENCLAW_DOCKER_ALL_TAIL_PARALLELISM: parallelism,
+      },
+    });
+    expect(parallelism).toContain("&& 3 || 1");
+  });
+
   it("splits Windows tests two ways on every runner backend", () => {
     const workflow = readCiWorkflow();
     const runStep = workflow.jobs["checks-windows"].steps.find(
@@ -3063,6 +3098,7 @@ NODE
       "checks-ui-e2e": "ubuntu-24.04",
       "checks-ui-e2e-real-gateway": "ubuntu-24.04",
       "control-ui-i18n": "ubuntu-24.04",
+      "docker-seed-e2e": "ubuntu-24.04",
       "ios-build": "macos-26",
       "macos-node": "macos-15",
       "macos-swift": "macos-26",
@@ -3084,6 +3120,7 @@ NODE
       // Same serial Chromium workload as checks-ui-e2e: hosted attempt 1 made it
       // the run's slowest job (205s mean vs a 150-190s plateau).
       "checks-ui-e2e-real-gateway": "blacksmith-16vcpu-ubuntu-2404",
+      "docker-seed-e2e": "blacksmith-16vcpu-ubuntu-2404",
       "qa-smoke-ci-profile": "blacksmith-16vcpu-ubuntu-2404",
       "sqlite-session-lifecycle": "blacksmith-8vcpu-ubuntu-2404",
       "macos-node": "blacksmith-6vcpu-macos-15",
@@ -3092,6 +3129,10 @@ NODE
       "check-test-types-hosted-core-shard": "blacksmith-8vcpu-ubuntu-2404",
       "checks-ui": "blacksmith-8vcpu-ubuntu-2404",
       "checks-windows": "blacksmith-8vcpu-windows-2025",
+    } as const;
+    const expectedHybridForkRunners = {
+      ...expectedHybridFirstAttemptRunners,
+      "docker-seed-e2e": "ubuntu-24.04",
     } as const;
     const configurableJobs = Object.entries(jobs)
       .filter(([, job]) => String(job["runs-on"]).startsWith("${{"))
@@ -3160,7 +3201,7 @@ NODE
           runnerBackend: "hybrid",
         }),
         `${jobName}: returning-contributor fork`,
-      ).toBe(expectedHybridFirstAttemptRunners[jobName as keyof typeof expectedHostedRunners]);
+      ).toBe(expectedHybridForkRunners[jobName as keyof typeof expectedHostedRunners]);
     }
 
     const widenedHybridMatrixRows = [
@@ -3524,6 +3565,7 @@ NODE
       "checks-ui-e2e",
       "checks-ui-e2e-real-gateway",
       "control-ui-i18n",
+      "docker-seed-e2e",
       "native-i18n",
       "qa-smoke-ci-profile",
       "sqlite-session-lifecycle",
@@ -4945,29 +4987,13 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
     );
   });
 
-  it.each(MANTIS_ISSUE_COMMENT_REACTION_WORKFLOWS)(
-    "routes Mantis reaction ownership through shared workflows in %s",
+  it.each(MANTIS_MANUAL_ONLY_WORKFLOWS)(
+    "keeps legacy Mantis scenarios on manual dispatch in %s",
     (workflowPath) => {
       const workflow = parse(readFileSync(workflowPath, "utf8"));
-      const resolveJob = workflow.jobs.resolve_request;
-      const cleanupJob = workflow.jobs.clear_issue_comment_reaction;
-      const expectedSecrets = {
-        MANTIS_GITHUB_APP_ID: "${{ secrets.MANTIS_GITHUB_APP_ID }}",
-        MANTIS_GITHUB_APP_PRIVATE_KEY: "${{ secrets.MANTIS_GITHUB_APP_PRIVATE_KEY }}",
-      };
 
-      expect(resolveJob.uses, workflowPath).toBe("./.github/workflows/mantis-resolve-request.yml");
-      expect(resolveJob.secrets, workflowPath).toEqual(expectedSecrets);
-      expect(cleanupJob.uses, workflowPath).toBe("./.github/workflows/mantis-clear-reaction.yml");
-      expect(cleanupJob.if, workflowPath).toContain(
-        "needs.resolve_request.outputs.reaction_id != ''",
-      );
-      expect(cleanupJob.permissions, workflowPath).toEqual({});
-      expect(cleanupJob.with, workflowPath).toMatchObject({
-        "comment-id": "${{ format('{0}', github.event.comment.id) }}",
-        "reaction-id": "${{ needs.resolve_request.outputs.reaction_id }}",
-      });
-      expect(cleanupJob.secrets, workflowPath).toEqual(expectedSecrets);
+      expect(workflow.on.workflow_dispatch, workflowPath).toBeDefined();
+      expect(workflow.on.issue_comment, workflowPath).toBeUndefined();
     },
   );
 
@@ -5920,6 +5946,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(legacy.outputs.run_native_i18n).toBe("false");
     expect(legacy.outputs.run_openclawkit_tests).toBe("false");
     expect(legacy.outputs.run_qa_smoke_ci).toBe("false");
+    expect(legacy.outputs.run_docker_seed_e2e).toBe("false");
+    expect(legacy.outputs.docker_seed_lanes).toBe("");
     expect(legacy.outputs.run_channel_contracts_shards).toBe("false");
     expect(legacy.outputs.run_protocol_event_coverage).toBe("false");
     expect(
@@ -5951,6 +5979,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(current.outputs.run_native_i18n).toBe("true");
     expect(current.outputs.run_openclawkit_tests).toBe("true");
     expect(current.outputs.run_qa_smoke_ci).toBe("true");
+    expect(current.outputs.run_docker_seed_e2e).toBe("false");
+    expect(current.outputs.docker_seed_lanes).toBe("");
     expect(current.outputs.run_sqlite_session_lifecycle).toBe("true");
     expect(current.outputs.run_channel_contracts_shards).toBe("true");
     expect(current.outputs.run_protocol_event_coverage).toBe("true");
@@ -6034,9 +6064,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       );
     }
 
+    const dockerSeedPath = "scripts/e2e/docker-openai-seed.ts";
     const changedPullRequest = runCiManifestFixture({
       bundledPlanner: true,
-      changedPaths: ["src/focused.ts", "extensions/codex/src/focused.ts"],
+      changedPaths: ["src/focused.ts", "extensions/codex/src/focused.ts", dockerSeedPath],
       eventName: "pull_request",
     });
     expect(changedPullRequest.status, changedPullRequest.output).toBe(0);
@@ -6066,6 +6097,8 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(changedPullRequest.outputs.run_checks_node_core_dist).toBe("true");
     expect(changedPullRequest.outputs.run_sqlite_session_lifecycle).toBe("false");
+    expect(changedPullRequest.outputs.run_docker_seed_e2e).toBe("true");
+    expect(changedPullRequest.outputs.docker_seed_lanes).toBe("mcp-channels cron-mcp-cleanup");
 
     const mixedFallbackPullRequest = runCiManifestFixture({
       bundledPlanner: true,
@@ -7135,6 +7168,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "macos-swift",
       "ios-build",
       "android",
+      "docker-seed-e2e",
     ];
 
     expect(workflow.on.pull_request).not.toHaveProperty("paths-ignore");
@@ -8515,7 +8549,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       (step: WorkflowStep) => step.name === "Dispatch and await trusted Telegram QA",
     );
     const identityStep = telegramWorkflow.jobs.trusted_identity.steps.find(
-      (step: WorkflowStep) => step.name === "Verify dispatched-main identity",
+      (step: WorkflowStep) => step.name === "Verify dispatched workflow identity",
     );
     const provenanceSteps = [
       telegramWorkflow.jobs.build_candidate.steps.find(
