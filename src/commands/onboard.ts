@@ -32,7 +32,9 @@ import {
   resolveDeprecatedAuthChoiceReplacement,
 } from "./auth-choice-legacy.js";
 import { formatAuthChoiceChoicesForCli } from "./auth-choice-options.js";
+import { GENERIC_PROVIDER_AUTH_CHOICES } from "./auth-choice-options.static.js";
 import { isGatewayDaemonRuntime } from "./daemon-runtime.js";
+import { resolveOnboardingSetupTarget } from "./onboard-agent-target.js";
 import {
   applyCustomApiConfig,
   CustomApiError,
@@ -56,7 +58,6 @@ import {
 } from "./onboard-types.js";
 
 const VALID_RESET_SCOPES = new Set<ResetScope>(["config", "config+creds+sessions", "full"]);
-const BUILT_IN_AUTH_CHOICES = ["setup-token", "token", "apiKey", "custom-api-key", "skip"];
 
 function rejectOption(runtime: RuntimeEnv, message: string): false {
   runtime.error(message);
@@ -93,11 +94,24 @@ function validatePreflightOptions(opts: OnboardOptions, runtime: RuntimeEnv): bo
   if (opts.remoteToken !== undefined && opts.remotePassword !== undefined) {
     return rejectOption(runtime, "Use either --remote-token or --remote-password, not both.");
   }
-  if (opts.mode === "remote" && opts.gatewayPassword !== undefined) {
-    return rejectOption(
-      runtime,
-      "--gateway-password configures local gateway auth. Use --remote-password in remote mode.",
-    );
+  if (opts.mode === "remote") {
+    const localGatewayCredentials = [
+      ["--gateway-password", opts.gatewayPassword, "--remote-password"],
+      ["--gateway-token", opts.gatewayToken, "--remote-token"],
+      [
+        "--gateway-token-ref-env",
+        opts.gatewayTokenRefEnv,
+        "--remote-token with --secret-input-mode ref",
+      ],
+    ] as const;
+    for (const [flag, value, remoteFlag] of localGatewayCredentials) {
+      if (value !== undefined) {
+        return rejectOption(
+          runtime,
+          `${flag} configures local gateway auth. Use ${remoteFlag} in remote mode.`,
+        );
+      }
+    }
   }
   if (opts.nonInteractive && opts.secretInputMode === "ref") {
     const gatewayCredentials = [
@@ -240,16 +254,14 @@ async function validateResetAuthChoice(params: {
   if (!authChoice) {
     return true;
   }
-  const availableChoices = new Set([
-    ...BUILT_IN_AUTH_CHOICES,
-    ...formatAuthChoiceChoicesForCli({
-      includeLegacyAliases: true,
+  const availableChoices = new Set(
+    formatAuthChoiceChoicesForCli({
       includeSkip: true,
       config: params.baseConfig,
       workspaceDir: params.workspaceDir,
       env: process.env,
     }).split("|"),
-  ]);
+  );
   if (!availableChoices.has(authChoice)) {
     return rejectOption(
       params.runtime,
@@ -270,8 +282,7 @@ async function validateResetAuthChoice(params: {
       includeUntrustedWorkspacePlugins: false,
     }),
   ];
-  const isGenericProviderChoice =
-    authChoice === "token" || authChoice === "setup-token" || authChoice === "apiKey";
+  const isGenericProviderChoice = GENERIC_PROVIDER_AUTH_CHOICES.includes(authChoice);
   const normalizedTokenProvider = normalizeTokenProviderInput(params.opts.tokenProvider);
   const inferredOptionKey = inferredAuthChoice?.matches[0]?.optionKey;
   const providerAuthChoice = isGenericProviderChoice
@@ -319,7 +330,16 @@ async function validateResetAuthChoice(params: {
       `Auth choice "${authChoice}" was not matched to provider "${params.opts.tokenProvider?.trim()}".`,
     );
   }
-  if (params.opts.nonInteractive && authChoice === "custom-api-key") {
+  if (!params.opts.nonInteractive || authChoice === "skip") {
+    return true;
+  }
+  const target = resolveOnboardingSetupTarget(
+    params.baseConfig,
+    params.opts.agentName
+      ? { name: params.opts.agentName, workspaceDir: params.workspaceDir }
+      : undefined,
+  );
+  if (authChoice === "custom-api-key") {
     try {
       const custom = parseNonInteractiveCustomApiFlags({
         baseUrl: params.opts.customBaseUrl,
@@ -341,6 +361,8 @@ async function validateResetAuthChoice(params: {
         flagName: "--custom-api-key",
         envVar: "CUSTOM_API_KEY",
         runtime: params.runtime,
+        agentDir: target.agentDir,
+        workspaceDir: params.workspaceDir,
         allowProfile: params.resetScope === "config",
         required: false,
         secretInputMode: params.opts.secretInputMode,
@@ -366,7 +388,7 @@ async function validateResetAuthChoice(params: {
       return rejectOption(params.runtime, message);
     }
   }
-  if (params.opts.nonInteractive && authChoice !== "custom-api-key" && authChoice !== "skip") {
+  if (authChoice !== "custom-api-key") {
     const runtimeProvider = providerAuthChoice
       ? resolveProviderMatch(
           resolvePluginProviders({
@@ -402,12 +424,15 @@ async function validateResetAuthChoice(params: {
       baseConfig: params.baseConfig,
       opts: params.opts,
       runtime: params.runtime,
+      agentDir: target.agentDir,
       workspaceDir: params.workspaceDir,
       resolveApiKey: async (input) =>
         await resolveNonInteractiveCredential({
           ...input,
           cfg: params.baseConfig,
           runtime: params.runtime,
+          agentDir: target.agentDir,
+          workspaceDir: params.workspaceDir,
           allowProfile: input.allowProfile === false ? false : params.resetScope === "config",
           secretInputMode: params.opts.secretInputMode,
         }),
