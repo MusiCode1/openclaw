@@ -19,7 +19,6 @@ import { canCallGatewayMethod } from "../lib/gateway-methods.ts";
 import { readSessionMethodAccess } from "../lib/session-method-access.ts";
 import { normalizeAgentId } from "../lib/sessions/session-key.ts";
 import { isTerminalAvailable } from "../lib/terminal-availability.ts";
-import { findSettingsSearchBlocks } from "../pages/config/settings-search.ts";
 import type { NewSessionTarget } from "../pages/new-session/location.ts";
 import { pluginTabKey, pluginTabRefFromSearch } from "../pages/plugin/route.ts";
 import type { ShellRouteState } from "./app-host-route-state.ts";
@@ -259,15 +258,6 @@ export function renderApplicationShell(host: ShellViewHost) {
   // must not reserve its fixed sidebar column (the grid would stay off-center).
   const settingsTakeover = isSettingsNavigationRoute(activeRoute) && !host.onboardingMode;
   const runtimeConfig = context.runtimeConfig.state;
-  const settingsSearchBlocks = findSettingsSearchBlocks({
-    query: host.settingsSearchQuery,
-    schema: runtimeConfig.configSchema,
-    value: runtimeConfig.configForm ?? runtimeConfig.configSnapshot?.config ?? null,
-    uiHints: runtimeConfig.configUiHints,
-    identityAvailable: Boolean(gatewaySnapshot.selfUser),
-    basePath: context.basePath,
-    canAdmin: operatorAccess.canAdmin,
-  });
   const onboarding = host.onboardingMode;
   const memoryImportActive = onboarding && activeRoute !== "custodian";
   host.lazyCustomElements.requestWhileActive(
@@ -375,19 +365,7 @@ export function renderApplicationShell(host: ShellViewHost) {
       lobsterPetSounds: uiSettings.lobsterPetSounds === true,
       gatewayVersion: config.serverVersion ?? gatewaySnapshot.hello?.server?.version ?? null,
       devGitBranch: config.devGitBranch,
-      updateAvailable: navigationSurfaceHidden ? null : overlaySnapshot.updateAvailable,
-      updateSchedule: navigationSurfaceHidden ? null : overlaySnapshot.updateSchedule,
-      heldUpdateCampaignId: overlaySnapshot.heldUpdateCampaignId,
-      updateBusy,
-      updateStatusBanner: overlaySnapshot.updateStatusBanner,
       watchUpdateProgress,
-      canUpdate,
-      canHoldUpdate,
-      onUpdate: () => void context.overlays.runUpdate(),
-      refreshRequired: navigationSurfaceHidden ? false : overlaySnapshot.controlUiRefreshRequired,
-      onRefresh: () => host.refreshControlUi(),
-      onHoldUpdate: () => context.overlays.holdUpdate(),
-      onReviewUpdate: () => host.navigate("updates"),
       onOpenApprovals: () => host.openApprovals(),
       onRetryConnect: () => context.gateway.connect(),
       onOpenNewSession: openNewSession,
@@ -425,7 +403,15 @@ export function renderApplicationShell(host: ShellViewHost) {
         onHoldUpdate: () => context.overlays.holdUpdate(),
         onReviewUpdate: () => host.navigate("updates"),
         searchQuery: host.settingsSearchQuery,
-        searchBlockMatches: settingsSearchBlocks,
+        searchParams: {
+          query: host.settingsSearchQuery,
+          schema: runtimeConfig.configSchema,
+          value: runtimeConfig.configForm ?? runtimeConfig.configSnapshot?.config ?? null,
+          uiHints: runtimeConfig.configUiHints,
+          identityAvailable: Boolean(gatewaySnapshot.selfUser),
+          basePath: context.basePath,
+          canAdmin: operatorAccess.canAdmin,
+        },
         onExit: () => host.exitSettings(),
         onRetryConnect: () => context.gateway.connect(),
         onNavigate: (routeId, options) => host.navigate(routeId, options),
