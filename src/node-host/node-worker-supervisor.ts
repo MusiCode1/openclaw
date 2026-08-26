@@ -210,22 +210,23 @@ class NodeWorkerSupervisor {
     }
     if (active?.state === "running") {
       if (active.container) {
-        const containerState = await this.requireContainerLifecycle().inspect(
-          active.container,
-          active,
-        );
-        if (containerState === "unknown") {
+        const inspection = await this.requireContainerLifecycle().inspect(active.container, active);
+        if (inspection === "unknown") {
           return this.store.get(launchId);
         }
-        if (containerState === "reused") {
+        if (inspection === "reused") {
           throw new Error(`node worker launch ${launchId} lost its container ownership`);
         }
-        if (containerState === "live") {
+        if (inspection === "live") {
           const clientState = inspectNodeWorkerProcessIdentity(active.worker);
           if (clientState !== "dead" && clientState !== "reused") {
             return this.store.get(launchId);
           }
-          await this.stopChild(active, "interrupted");
+          // Observe the dead attach client's result before fencing its still-running owner.
+          await active.done;
+          if (this.active.get(launchId) === active) {
+            await this.stopChild(active, "interrupted");
+          }
         } else {
           await this.cleanupActiveContainer(active);
           await active.done;
@@ -411,11 +412,12 @@ class NodeWorkerSupervisor {
         }
       }
       await Promise.allSettled(this.starting.values());
-      await Promise.all(
+      const stopped = await Promise.allSettled(
         [...this.active.values()]
           .filter((active): active is NodeWorkerRunningChild => active.state === "running")
-          .map(async (active) => await this.stopChild(active, "interrupted")),
+          .map((active) => this.stopChild(active, "interrupted")),
       );
+      errors.push(...stopped.flatMap((r) => (r.status === "rejected" ? [r.reason] : [])));
       for (const active of this.active.values()) {
         if (active.state !== "observed") {
           continue;
@@ -426,11 +428,10 @@ class NodeWorkerSupervisor {
           errors.push(error);
         }
       }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw new AggregateError(errors, "node worker terminal reconciliation failed");
+      if (errors.length > 0) {
+        throw errors.length === 1
+          ? errors[0]
+          : new AggregateError(errors, "node worker terminal reconciliation failed");
       }
     })();
     const closePromise = operation.finally(() => {

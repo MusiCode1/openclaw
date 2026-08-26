@@ -74,6 +74,7 @@ const MATURITY_GENERATED_PR_PATHS = [
 ];
 
 type WorkflowStep = {
+  "continue-on-error"?: boolean;
   env?: Record<string, unknown>;
   id?: string;
   if?: string;
@@ -1156,6 +1157,52 @@ function runProtocolSinceFixture(checkout: string, baseSha: string) {
   });
 }
 
+function runGuardCheckFixture(options: { frozenTarget: boolean; scripts: string[] }): {
+  calls: string[];
+  output: string;
+  status: number | null;
+} {
+  const root = tempDirs.make("openclaw-ci-guards-");
+  const fakeBin = path.join(root, "bin");
+  const callsPath = path.join(root, "pnpm-calls.txt");
+  mkdirSync(fakeBin);
+  writeFileSync(
+    path.join(root, "package.json"),
+    `${JSON.stringify({
+      scripts: Object.fromEntries(options.scripts.map((name) => [name, "true"])),
+    })}\n`,
+  );
+  writeExecutable(path.join(fakeBin, "pnpm"), [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    'printf "%s\\n" "$*" >> "$PNPM_CALLS"',
+  ]);
+  const checkShardRun = readCiWorkflow().jobs["check-shard"].steps.find(
+    (step: WorkflowStep) => step.name === "Run check shard",
+  ).run;
+  const run = spawnSync("bash", ["-c", checkShardRun], {
+    cwd: root,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      FROZEN_TARGET: options.frozenTarget ? "true" : "false",
+      FORMAT_CHECK: "false",
+      HISTORICAL_TARGET: options.frozenTarget ? "true" : "false",
+      PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
+      PNPM_CALLS: callsPath,
+      PR_BASE_SHA: "",
+      TASK: "guards",
+    },
+  });
+  return {
+    calls: existsSync(callsPath)
+      ? readFileSync(callsPath, "utf8").trim().split("\n").filter(Boolean)
+      : [],
+    output: `${run.stdout}${run.stderr}`,
+    status: run.status,
+  };
+}
+
 function runDependencyCheckFixture(options: {
   historicalTarget: boolean;
   releaseToolingEntry?: boolean;
@@ -1997,7 +2044,12 @@ NODE
       DOCKERHUB_USERNAME: "${{ secrets.DOCKERHUB_USERNAME }}",
       DOCKERHUB_TOKEN: "${{ secrets.DOCKERHUB_TOKEN }}",
     });
-    expect(publish.permissions).toEqual({ contents: "read", packages: "write" });
+    expect(publish.permissions).toEqual({
+      actions: "read",
+      attestations: "read",
+      contents: "read",
+      packages: "write",
+    });
     expect(releaseWorkflow.jobs.approve_docker_publish.environment).toBe("docker-release");
   });
 
@@ -2080,8 +2132,17 @@ NODE
     expect(workflow.on.push.paths).toContain("apps/android/app/src/play/**");
     expect(workflow.on.push.paths).toContain("apps/android/app/src/thirdParty/**");
     expect(workflow.on.push.paths).toContain("apps/android/wear/src/main/**");
-    expect(workflow.on.push.paths).toContain("scripts/android-app-i18n.ts");
-    expect(workflow.on.push.paths).toContain("scripts/apple-app-i18n.ts");
+    for (const generatorInput of [
+      "scripts/android-app-i18n.ts",
+      "scripts/apple-app-i18n.ts",
+      "scripts/native-app-i18n.ts",
+      "scripts/native-i18n-locales.ts",
+    ]) {
+      expect(workflow.on.push.paths).toContain(generatorInput);
+      expect(nativePublishStep.with["invalidation-paths"].trim().split("\n")).toContain(
+        generatorInput,
+      );
+    }
     expect(refreshStep.run).toContain("run_refresh anthropic");
     expect(refreshStep.run).toContain("retrying with OpenAI");
     expect(refreshStep.run).toContain("run_openai_refresh");
@@ -2116,8 +2177,6 @@ NODE
       "apps/ios/ShareExtension/*.lproj/InfoPlist.strings",
       "apps/ios/ActivityWidget/*.lproj/InfoPlist.strings",
     ]);
-    expect(nativePublishStep.with["invalidation-paths"]).toContain("scripts/android-app-i18n.ts");
-    expect(nativePublishStep.with["invalidation-paths"]).toContain("scripts/apple-app-i18n.ts");
     expect(nativePublishStep.with["invalidation-paths"]).toContain("apps/.i18n/native-source.json");
     expect(nativePublishStep.with["invalidation-paths"]).toContain("apps/android/app/src/play");
     expect(nativePublishStep.with["invalidation-paths"]).toContain(
@@ -4651,9 +4710,13 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
       (step: WorkflowStep) => step.name === "Warm transform and compile caches",
     );
     const warmerSteps = warmer.jobs.warm.steps as WorkflowStep[];
+    const warmAssertionStep = expectDefined(
+      warmerSteps.find((step) => step.name === "Assert cache warming succeeded"),
+      "final cache warming assertion",
+    );
 
     expect(warmer.concurrency["cancel-in-progress"]).toBe(false);
-    expect(warmer.concurrency.group).toBe("vitest-cache-warm");
+    expect(warmer.concurrency.group).toBe("vitest-cache-warm-${{ github.ref }}");
     // hosted-mode cache recovery needs a maintainer-operated fallback when the
     // scheduled seed is missing or stale.
     expect(warmer.on).toHaveProperty("workflow_dispatch");
@@ -4674,6 +4737,9 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
     );
     expect(warmerSource).not.toContain("OPENCLAW_NODE_TEST_CONFIGS_JSON");
     expect(warmerSource).toContain('"OPENCLAW_NODE_TEST_PLAN_CONCURRENCY=1"');
+    expect(seedStep.run).toContain('"OPENCLAW_NODE_TEST_PLAN_CONTINUE_ON_FAILURE=1"');
+    expect(warmStep.id).toBe("warm-caches");
+    expect(warmStep["continue-on-error"]).toBe(true);
     expect(warmerSetup.with).toMatchObject({
       "build-all-cache-scope": "full",
       "cache-mode": "read-write",
@@ -4705,10 +4771,17 @@ server.listen(0, "127.0.0.1", () => writeFileSync(readyPath, String(server.addre
       expect(saveStep.if, saveStep.name).toContain(
         "steps.setup-node-env.outputs.cache-mode == 'read-write'",
       );
+      expect(warmerSteps.indexOf(saveStep), saveStep.name).toBeGreaterThan(
+        warmerSteps.indexOf(warmStep),
+      );
+      expect(warmerSteps.indexOf(saveStep), saveStep.name).toBeLessThan(
+        warmerSteps.indexOf(warmAssertionStep),
+      );
     }
-    expect(warmerSteps.indexOf(warmStep)).toBeLessThan(
-      warmerSteps.findIndex((step) => step.name === "Save Vitest transform cache"),
-    );
+    expect(warmAssertionStep.if).toBe("${{ always() }}");
+    expect(warmAssertionStep.run).toContain("steps.warm-caches.outcome");
+    expect(warmAssertionStep.run).toContain("exit 1");
+    expect(warmerSteps.at(-1)).toBe(warmAssertionStep);
     // No close-time cleanup workflow is needed; Actions cache LRU/TTL expires
     // old hosted-writer and warmer generations.
     expect(existsSync(".github/workflows/pr-cache-cleanup.yml")).toBe(false);
@@ -6192,6 +6265,50 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
   });
 
+  it("runs temp path guardrails in the hosted guard shard", () => {
+    const requiredScripts = ["check:doctor-deprecation-registry", "check:coercion-helpers"];
+    const current = runGuardCheckFixture({
+      frozenTarget: false,
+      scripts: [...requiredScripts, "check:temp-path-guardrails"],
+    });
+    expect(current.status, current.output).toBe(0);
+    expect(current.calls).toContain("check:temp-path-guardrails");
+    expect(current.calls.indexOf("check:temp-path-guardrails")).toBeLessThan(
+      current.calls.indexOf("dup:check"),
+    );
+
+    const frozenMissing = runGuardCheckFixture({
+      frozenTarget: true,
+      scripts: requiredScripts,
+    });
+    expect(frozenMissing.status, frozenMissing.output).toBe(0);
+    expect(frozenMissing.calls).not.toContain("check:temp-path-guardrails");
+    expect(frozenMissing.calls).toContain("dup:check:coverage");
+    expect(frozenMissing.output).toContain(
+      "[skip] frozen target predates the temp path guardrails",
+    );
+
+    const currentMissing = runGuardCheckFixture({
+      frozenTarget: false,
+      scripts: requiredScripts,
+    });
+    expect(currentMissing.status).toBe(1);
+    expect(currentMissing.calls).not.toContain("check:temp-path-guardrails");
+    expect(currentMissing.calls).not.toContain("dup:check");
+    expect(currentMissing.output).toContain(
+      "Current CI targets must provide the check:temp-path-guardrails package script.",
+    );
+
+    const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+    const preflightGuards = workflow.slice(
+      workflow.indexOf("guards)"),
+      workflow.indexOf("npm-lock)"),
+    );
+    expect(preflightGuards.indexOf("pnpm check:temp-path-guardrails")).toBeLessThan(
+      preflightGuards.indexOf("pnpm dup:check"),
+    );
+  });
+
   it("rejects ambiguous zero-before main pushes and preserves concrete bases", () => {
     const zeroSha = "0".repeat(40);
     const threeCommit = runPushDiffBaseFixture({ commitCount: 3, eventBaseSha: zeroSha });
@@ -7310,13 +7427,26 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(realGatewayRunContract).not.toContain("--testTimeout");
   });
 
-  it("does not rebuild Control UI after build:ci-artifacts", () => {
+  it("builds artifacts once and smoke-tests the built CLI with Node and Bun", () => {
     const workflow = readCiWorkflow();
     const buildArtifactSteps = workflow.jobs["build-artifacts"].steps;
+    const setupStep = buildArtifactSteps.find(
+      (step: WorkflowStep) => step.name === "Setup Node environment",
+    );
     const buildDistStep = buildArtifactSteps.find(
       (step: WorkflowStep) => step.name === "Build dist",
     );
+    const nodeHelpSmoke = buildArtifactSteps.find(
+      (step: WorkflowStep) => step.name === "Smoke test CLI launcher help",
+    );
+    const nodeStatusSmoke = buildArtifactSteps.find(
+      (step: WorkflowStep) => step.name === "Smoke test CLI launcher status json",
+    );
+    const bunSmoke = buildArtifactSteps.find(
+      (step: WorkflowStep) => step.name === "Smoke test built CLI with Bun",
+    );
 
+    expect(setupStep.with["install-bun"]).toBe("true");
     expect(buildDistStep.run).toBe("pnpm build:ci-artifacts");
     expect(buildArtifactSteps.map((step: WorkflowStep) => step.name)).not.toContain(
       "Build Control UI",
@@ -7324,6 +7454,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     expect(buildArtifactSteps.some((step: WorkflowStep) => step.run === "pnpm ui:build")).toBe(
       false,
     );
+    expect(nodeHelpSmoke.run).toBe("node openclaw.mjs --help");
+    expect(nodeStatusSmoke.run).toBe("node openclaw.mjs status --json --timeout 1");
+    expect(bunSmoke.run).toContain("bun openclaw.mjs --help");
+    expect(bunSmoke.run).toContain("bun openclaw.mjs status --json --timeout 1");
   });
 
   it("keeps source-only Control UI locale drift advisory", () => {

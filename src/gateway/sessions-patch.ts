@@ -81,6 +81,7 @@ import {
   isAgentSessionModelPatchOrigin,
   snapshotAgentModelFallback,
 } from "./session-model-patch-origin.js";
+import { applySessionPermissionMode } from "./session-permission-policy.js";
 import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
 
@@ -122,18 +123,16 @@ export function resolveSessionPatchModelSelection(params: {
 
 function normalizeExecSecurity(raw: string): "deny" | "allowlist" | "full" | undefined {
   const normalized = normalizeOptionalLowercaseString(raw);
-  if (normalized === "deny" || normalized === "allowlist" || normalized === "full") {
-    return normalized;
-  }
-  return undefined;
+  return normalized === "deny" || normalized === "allowlist" || normalized === "full"
+    ? normalized
+    : undefined;
 }
 
 function normalizeExecAsk(raw: string): "off" | "on-miss" | "always" | undefined {
   const normalized = normalizeOptionalLowercaseString(raw);
-  if (normalized === "off" || normalized === "on-miss" || normalized === "always") {
-    return normalized;
-  }
-  return undefined;
+  return normalized === "off" || normalized === "on-miss" || normalized === "always"
+    ? normalized
+    : undefined;
 }
 
 function normalizeSessionToolOverrides(
@@ -177,6 +176,8 @@ export async function projectSessionsPatchEntry(params: {
   storeKey: string;
   agentId?: string;
   patch: SessionsPatchParams;
+  /** Canonical root prepared by the trusted create path; never accepted from public patches. */
+  preparedSessionRoot?: string;
   archivedBy?: SessionCreatedActor;
   loadGatewayModelCatalog?: () => Promise<ModelCatalogEntry[]>;
   providerAuthMetadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
@@ -239,14 +240,10 @@ export async function projectSessionsPatchEntry(params: {
   };
   let loadedModelCatalog: ModelCatalogEntry[] | undefined;
   const loadPreparedModelCatalogForPatch = async () => {
-    if (loadedModelCatalog) {
-      return loadedModelCatalog;
+    if (!loadedModelCatalog && params.loadGatewayModelCatalog) {
+      const catalog = await params.loadGatewayModelCatalog();
+      loadedModelCatalog = Array.isArray(catalog) ? catalog : [];
     }
-    if (!params.loadGatewayModelCatalog) {
-      return undefined;
-    }
-    const catalog = await params.loadGatewayModelCatalog();
-    loadedModelCatalog = Array.isArray(catalog) ? catalog : [];
     return loadedModelCatalog;
   };
 
@@ -257,6 +254,7 @@ export async function projectSessionsPatchEntry(params: {
     ...existing,
     sessionId: existing?.sessionId || randomUUID(),
     updatedAt: Math.max(existing?.updatedAt ?? 0, now),
+    ...(params.preparedSessionRoot ? { sessionRoot: params.preparedSessionRoot } : {}),
     // Stamp only genuinely new rows; existing placeholder aliases must not be restamped.
     ...(creation && params.existingEntry === undefined ? buildSessionCreationStamp(creation) : {}),
   };
@@ -554,12 +552,14 @@ export async function projectSessionsPatchEntry(params: {
   }
 
   if ("execNode" in patch) {
-    const raw = patch.execNode;
-    if (raw === null) {
+    if (patch.execNode === null) {
       delete next.execNode;
       delete next.execCwd;
-    } else if (raw !== undefined) {
-      const trimmed = normalizeOptionalString(raw) ?? "";
+      if (next.execHost === "node") {
+        delete next.execHost;
+      }
+    } else if (patch.execNode !== undefined) {
+      const trimmed = normalizeOptionalString(patch.execNode) ?? "";
       if (!trimmed) {
         return invalid("invalid execNode: empty");
       }
@@ -571,10 +571,9 @@ export async function projectSessionsPatchEntry(params: {
     }
   }
   if ("permissionMode" in patch) {
-    if (patch.permissionMode === null) {
-      delete next.permissionMode;
-    } else if (patch.permissionMode !== undefined) {
-      next.permissionMode = patch.permissionMode;
+    const permissionRootError = applySessionPermissionMode(next, patch.permissionMode);
+    if (permissionRootError) {
+      return invalid(permissionRootError);
     }
   }
   if ("model" in patch) {

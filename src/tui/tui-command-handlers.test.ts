@@ -35,7 +35,7 @@ type SelectableOverlay = {
   onSelect?: (item: { value: string; label?: string; description?: string }) => void;
 };
 type SetActivityStatusMock = ReturnType<typeof vi.fn> & ((text: string) => void);
-type SetSessionMock = ReturnType<typeof vi.fn> & ((key: string) => Promise<void>);
+type SetSessionMock = ReturnType<typeof vi.fn> & ((key: string, agentId?: string) => Promise<void>);
 type ConsumeCompletedRunMock = ReturnType<typeof vi.fn> & ((runId: string) => boolean);
 type FlushPendingHistoryRefreshMock = ReturnType<typeof vi.fn> & (() => void);
 type RefreshAgentsMock = ReturnType<typeof vi.fn> & (() => Promise<Result<void, string>>);
@@ -149,7 +149,13 @@ function createHarness(params?: {
     params?.runUsageCostCommand === null
       ? undefined
       : (params?.runUsageCostCommand ?? vi.fn().mockResolvedValue({ text: "💸 Usage cost" }));
-  const setSession = params?.setSession ?? (vi.fn().mockResolvedValue(undefined) as SetSessionMock);
+  const setSession =
+    params?.setSession ??
+    (vi.fn(async (_key: string, agentId?: string) => {
+      if (agentId) {
+        state.currentAgentId = agentId;
+      }
+    }) as SetSessionMock);
   const addUser = vi.fn();
   const addPendingUser = vi.fn();
   const dropPendingUser = vi.fn();
@@ -403,6 +409,94 @@ describe("tui command handlers", () => {
     expect(harness.openOverlay).toHaveBeenCalledTimes(2);
     expect(harness.closeOverlay).toHaveBeenCalledExactlyOnceWith(harness.overlayHandle);
   });
+
+  it.each([
+    {
+      name: "model",
+      command: "/models",
+      value: "private/research-only",
+      initialSession: "agent:research:incident",
+      replacementSession: "agent:ops:main",
+    },
+    {
+      name: "session",
+      command: "/sessions",
+      value: "agent:research:incident",
+      initialSession: "agent:research:incident",
+      replacementSession: "agent:ops:main",
+    },
+    {
+      name: "global model",
+      command: "/models",
+      value: "private/research-only",
+      initialSession: "global",
+      replacementSession: "global",
+    },
+    {
+      name: "global session",
+      command: "/sessions",
+      value: "agent:research:incident",
+      initialSession: "global",
+      replacementSession: "global",
+    },
+  ])(
+    "retires an open $name picker after its selected agent is replaced",
+    async ({ command, value, initialSession, replacementSession }) => {
+      const harness = createHarness({
+        currentAgentId: "research",
+        currentSessionKey: initialSession,
+        agents: [{ id: "research" }],
+        listModels: vi.fn().mockResolvedValue([{ provider: "private", id: "research-only" }]),
+        listSessions: vi
+          .fn()
+          .mockResolvedValue({ sessions: [{ key: "agent:research:incident", updatedAt: 1 }] }),
+      });
+
+      await harness.handleCommand(command);
+      const selector = firstMockArg(harness.openOverlay, "openOverlay") as SelectableOverlay;
+      harness.state.currentAgentId = "ops";
+      harness.state.currentSessionKey = replacementSession;
+      selector.onSelect?.({ value });
+      await flushAsyncSelect();
+
+      expect(harness.patchSession).not.toHaveBeenCalled();
+      expect(harness.setSession).not.toHaveBeenCalled();
+      expect(harness.closeOverlay).toHaveBeenCalledExactlyOnceWith(harness.overlayHandle);
+    },
+  );
+
+  it.each([
+    { name: "agent", command: "/agents", value: "ops", session: "" },
+    {
+      name: "session",
+      command: "/sessions",
+      value: "agent:research:next",
+      session: "agent:research:next",
+    },
+  ])(
+    "accepts an intentional $name picker selection for its current owner",
+    async ({ command, value, session }) => {
+      const harness = createHarness({
+        currentAgentId: "research",
+        currentSessionKey: "agent:research:incident",
+        agents: [{ id: "research" }, { id: "ops" }],
+        listSessions: vi
+          .fn()
+          .mockResolvedValue({ sessions: [{ key: "agent:research:next", updatedAt: 1 }] }),
+      });
+
+      await harness.handleCommand(command);
+      const selector = firstMockArg(harness.openOverlay, "openOverlay") as SelectableOverlay;
+      selector.onSelect?.({ value });
+      await flushAsyncSelect();
+
+      expect(harness.setSession).toHaveBeenCalledExactlyOnceWith(
+        session,
+        ...(command === "/agents" ? [value] : []),
+      );
+      expect(harness.closeOverlay).toHaveBeenCalledExactlyOnceWith(harness.overlayHandle);
+    },
+  );
 
   it("bounds Ctrl+P hydration to recent non-global TUI sessions", async () => {
     const listSessions = vi.fn().mockResolvedValue({
@@ -676,6 +770,70 @@ describe("tui command handlers", () => {
     expect(refreshSessionInfo).toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "a different agent", replace: false, fails: false },
+    { name: "a replacement session", replace: true, fails: false },
+    { name: "a rejected old goal", replace: false, fails: true },
+  ])("keeps a delayed local goal from leaking into $name", async ({ replace, fails }) => {
+    const deferred = createDeferred<{ text: string; continuationPrompt?: string }>();
+    const harness = createHarness({
+      opts: { local: true },
+      currentAgentId: "research",
+      currentSessionKey: "agent:research:private",
+      currentSessionId: "research-session",
+      sessionGeneration: 4,
+      runGoalCommand: vi.fn(() => deferred.promise),
+    });
+
+    const pending = harness.handleCommand("/goal start private objective");
+    if (replace) {
+      harness.state.currentSessionId = "replacement-session";
+      harness.state.sessionGeneration += 1;
+    } else {
+      harness.state.currentAgentId = "ops";
+      harness.state.currentSessionKey = "agent:ops:public";
+      harness.state.currentSessionId = "ops-session";
+    }
+    if (fails) {
+      deferred.reject(new Error("private research failure"));
+    } else {
+      deferred.resolve({
+        text: "private research goal status",
+        continuationPrompt: "PRIVATE_RESEARCH_OBJECTIVE",
+      });
+    }
+    await pending;
+
+    expect(harness.sendChat).not.toHaveBeenCalled();
+    expect(harness.addSystem).not.toHaveBeenCalled();
+    expect(harness.refreshSessionInfo).not.toHaveBeenCalled();
+  });
+
+  it("does not send an old goal continuation after its session changes during refresh", async () => {
+    const refresh = createDeferred();
+    const harness = createHarness({
+      opts: { local: true },
+      currentAgentId: "research",
+      currentSessionKey: "agent:research:private",
+      currentSessionId: "research-session",
+      runGoalCommand: vi.fn().mockResolvedValue({
+        text: "private research goal status",
+        continuationPrompt: "PRIVATE_RESEARCH_OBJECTIVE",
+      }),
+      refreshSessionInfo: vi.fn(() => refresh.promise),
+    });
+
+    const pending = harness.handleCommand("/goal start private objective");
+    await vi.waitFor(() => expect(harness.refreshSessionInfo).toHaveBeenCalledOnce());
+    harness.state.currentAgentId = "ops";
+    harness.state.currentSessionKey = "agent:ops:public";
+    harness.state.currentSessionId = "ops-session";
+    refresh.resolve();
+    await pending;
+
+    expect(harness.sendChat).not.toHaveBeenCalled();
+  });
+
   it("wraps command-prefixed local goal objectives before sending", async () => {
     const slashPrompt = `Pursue this goal exactly as written from this JSON string: "\\/status"`;
     const slashRunGoalCommand = vi
@@ -918,8 +1076,30 @@ describe("tui command handlers", () => {
     await handleCommand("/agent Work");
 
     expect(state.currentAgentId).toBe("work");
-    expect(setSession).toHaveBeenCalledWith("");
+    expect(setSession).toHaveBeenCalledWith("", "work");
     expect(addSystem).toHaveBeenCalledWith("agent set to work; use /openclaw to return");
+  });
+
+  it("lets the session owner observe the previous agent before switching a global session", async () => {
+    let ownerBeforeSelection: string | undefined;
+    const setSession = vi.fn(async (_key: string, agentId?: string) => {
+      ownerBeforeSelection = harness.state.currentAgentId;
+      if (agentId) {
+        harness.state.currentAgentId = agentId;
+      }
+    }) as SetSessionMock;
+    const harness = createHarness({
+      currentAgentId: "research",
+      currentSessionKey: "global",
+      setSession,
+    });
+
+    await harness.handleCommand("/agent OPS");
+
+    expect(ownerBeforeSelection).toBe("research");
+    expect(setSession).toHaveBeenCalledExactlyOnceWith("", "ops");
+    expect(harness.state.currentAgentId).toBe("ops");
+    expect(harness.addSystem).toHaveBeenCalledWith("agent set to ops; use /openclaw to return");
   });
 
   it("marks the generated runId as local before gateway events arrive", async () => {
@@ -1471,6 +1651,87 @@ describe("tui command handlers", () => {
     expect(loadHistory).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { name: "a different agent", replace: false, fails: false },
+    { name: "a replacement session", replace: true, fails: false },
+    { name: "a rejected old session", replace: false, fails: true },
+  ])("does not let delayed /new hijack $name", async ({ replace, fails }) => {
+    const deferred = createDeferred<{ ok: true; key: string }>();
+    const harness = createHarness({
+      currentAgentId: "research",
+      currentSessionKey: "agent:research:private",
+      currentSessionId: "research-session",
+      sessionGeneration: 4,
+      sessionInfo: { inputTokens: 11, outputTokens: 22, totalTokens: 33 },
+      createSession: vi.fn(() => deferred.promise),
+    });
+
+    const pending = harness.handleCommand("/new");
+    if (replace) {
+      harness.state.currentSessionId = "replacement-session";
+      harness.state.sessionGeneration += 1;
+    } else {
+      harness.state.currentAgentId = "ops";
+      harness.state.currentSessionKey = "agent:ops:public";
+      harness.state.currentSessionId = "ops-session";
+    }
+    if (fails) {
+      deferred.reject(new Error("private research session failure"));
+    } else {
+      deferred.resolve({ ok: true, key: "agent:research:private-child" });
+    }
+    await pending;
+
+    expect(harness.setSession).not.toHaveBeenCalled();
+    expect(harness.addSystem).not.toHaveBeenCalled();
+    expect(harness.state.sessionInfo).toMatchObject({
+      inputTokens: 11,
+      outputTokens: 22,
+      totalTokens: 33,
+    });
+  });
+
+  it.each([
+    { name: "reports an adopted session failure", fails: true, switches: false },
+    { name: "does not leak an adopted session notice", fails: false, switches: true },
+  ])("$name after /new changes the selected session", async ({ fails, switches }) => {
+    const adoption = createDeferred();
+    const createdKey = "agent:research:private-child";
+    const harness = createHarness({
+      currentAgentId: "research",
+      currentSessionKey: "agent:research:private",
+      currentSessionId: "research-session",
+      createSession: vi.fn().mockResolvedValue({ ok: true, key: createdKey }),
+      setSession: vi.fn((key: string) => {
+        harness.state.currentSessionKey = key;
+        harness.state.currentSessionId = null;
+        return adoption.promise;
+      }) as SetSessionMock,
+    });
+
+    const pending = harness.handleCommand("/new");
+    await vi.waitFor(() => expect(harness.setSession).toHaveBeenCalledOnce());
+    if (switches) {
+      harness.state.currentAgentId = "ops";
+      harness.state.currentSessionKey = "agent:ops:public";
+      harness.state.currentSessionId = "ops-session";
+    }
+    if (fails) {
+      adoption.reject(new Error("replacement history unavailable"));
+    } else {
+      adoption.resolve();
+    }
+    await pending;
+
+    if (fails) {
+      expect(harness.addSystem).toHaveBeenCalledWith(
+        "new session failed: replacement history unavailable",
+      );
+    } else {
+      expect(harness.addSystem).not.toHaveBeenCalled();
+    }
+  });
+
   it("reports a reset after adopting the backend's replacement session key", async () => {
     const resetResult = {
       ok: true as const,
@@ -1955,6 +2216,52 @@ describe("tui command handlers", () => {
     },
   );
 
+  it.each([
+    { command: "/think high", rejected: false },
+    { command: "/verbose full", rejected: false },
+    { command: "/usage reset", rejected: false },
+    { command: "/model openai/gpt-5.6-luna", rejected: true },
+  ])(
+    "ignores a stale $command patch after the same session is reset",
+    async ({ command, rejected }) => {
+      const deferred = createDeferred<{
+        ok: true;
+        path: string;
+        key: string;
+        entry: Record<string, unknown>;
+      }>();
+      const harness = createHarness({
+        currentSessionId: "session-before-reset",
+        sessionGeneration: 4,
+        sessionInfo: { responseUsage: "tokens", effectiveResponseUsage: "tokens" },
+        patchSession: vi.fn(() => deferred.promise),
+      });
+
+      const pending = harness.handleCommand(command);
+      harness.state.currentSessionId = "session-after-reset";
+      harness.state.sessionGeneration = 5;
+      if (rejected) {
+        deferred.reject(new Error("stale session setting"));
+      } else {
+        deferred.resolve({
+          ok: true,
+          path: "/sessions/patch",
+          key: "agent:main:main",
+          entry: { model: "stale-model" },
+        });
+      }
+      await pending;
+
+      expect(harness.state.sessionInfo.responseUsage).toBe("tokens");
+      expect(harness.state.sessionInfo.effectiveResponseUsage).toBe("tokens");
+      expect(harness.applySessionInfoFromPatch).not.toHaveBeenCalled();
+      expect(harness.refreshSessionInfo).not.toHaveBeenCalled();
+      expect(harness.loadHistory).not.toHaveBeenCalled();
+      expect(harness.clearTools).not.toHaveBeenCalled();
+      expect(harness.addSystem).not.toHaveBeenCalled();
+    },
+  );
+
   it("applies a model patch after its selected session becomes canonical", async () => {
     const deferred = createDeferred<{
       ok: true;
@@ -2003,6 +2310,11 @@ describe("tui command handlers", () => {
   it.each([
     { name: "another session", initialKey: "agent:main:first", nextKey: "agent:main:second" },
     { name: "another global agent", initialKey: "global", nextKey: "global" },
+    {
+      name: "a replacement incarnation",
+      initialKey: "agent:main:main",
+      nextKey: "agent:main:main",
+    },
   ])("ignores a stale reset after selecting $name", async ({ initialKey, nextKey }) => {
     const deferred = createDeferred<{
       ok: true;
@@ -2012,6 +2324,8 @@ describe("tui command handlers", () => {
     const harness = createHarness({
       currentSessionKey: initialKey,
       currentAgentId: "main",
+      currentSessionId: "first-session",
+      sessionGeneration: 4,
       resetSession: vi.fn(() => deferred.promise),
       applySessionMutationResult: vi.fn().mockReturnValue(true),
     });
@@ -2025,6 +2339,9 @@ describe("tui command handlers", () => {
     harness.state.currentSessionKey = nextKey;
     if (initialKey === "global") {
       harness.state.currentAgentId = "work";
+    }
+    if (initialKey === nextKey && initialKey !== "global") {
+      harness.state.sessionGeneration += 1;
     }
     harness.state.currentSessionId = "second-session";
     deferred.resolve({
@@ -2131,6 +2448,28 @@ describe("tui command handlers", () => {
     });
     await openclaw.handleCommand("/think");
     expect(openclaw.addSystem).toHaveBeenCalledWith(expect.stringContaining("ultra"));
+  });
+
+  it("uses the active session's supported thinking levels in help and command usage", async () => {
+    const { handleCommand, addSystem } = createHarness({
+      sessionInfo: {
+        modelProvider: "minimax",
+        model: "MiniMax-M3",
+        thinkingLevels: [
+          { id: "off", label: "off" },
+          { id: "max", label: "max" },
+        ],
+      },
+    });
+
+    await handleCommand("/help");
+    await handleCommand("/think");
+
+    expect(addSystem).toHaveBeenNthCalledWith(
+      1,
+      expect.stringContaining("/think <off|max|default>"),
+    );
+    expect(addSystem).toHaveBeenNthCalledWith(2, "usage: /think <off|max|default>");
   });
 
   it.each([
@@ -2926,21 +3265,58 @@ describe("tui command handlers", () => {
   });
 
   it.each([
-    { name: "session result", sessionKey: "agent:main:first", agentId: "main", fails: false },
-    { name: "global-agent result", sessionKey: "global", agentId: "main", fails: false },
-    { name: "session failure", sessionKey: "agent:main:first", agentId: "main", fails: true },
-  ])("suppresses a stale usage-cost $name", async ({ sessionKey, agentId, fails }) => {
+    {
+      name: "session result",
+      sessionKey: "agent:main:first",
+      agentId: "main",
+      fails: false,
+      replace: false,
+    },
+    {
+      name: "global-agent result",
+      sessionKey: "global",
+      agentId: "main",
+      fails: false,
+      replace: false,
+    },
+    {
+      name: "session failure",
+      sessionKey: "agent:main:first",
+      agentId: "main",
+      fails: true,
+      replace: false,
+    },
+    {
+      name: "replacement-session result",
+      sessionKey: "agent:main:first",
+      agentId: "main",
+      fails: false,
+      replace: true,
+    },
+    {
+      name: "replacement-session failure",
+      sessionKey: "agent:main:first",
+      agentId: "main",
+      fails: true,
+      replace: true,
+    },
+  ])("suppresses a stale usage-cost $name", async ({ sessionKey, agentId, fails, replace }) => {
     const deferred = createDeferred<{ text: string }>();
     const runUsageCostCommand = vi.fn(() => deferred.promise);
     const harness = createHarness({
       opts: { local: true },
       currentSessionKey: sessionKey,
       currentAgentId: agentId,
+      currentSessionId: "original-session",
+      sessionGeneration: 4,
       runUsageCostCommand,
     });
 
     const pending = harness.handleCommand("/usage cost");
-    if (sessionKey === "global") {
+    if (replace) {
+      harness.state.currentSessionId = "replacement-session";
+      harness.state.sessionGeneration += 1;
+    } else if (sessionKey === "global") {
       harness.state.currentAgentId = "work";
     } else {
       harness.state.currentSessionKey = "agent:main:second";

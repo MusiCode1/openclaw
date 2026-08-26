@@ -26,7 +26,10 @@ import {
   replaceSessionEntry,
   withTranscriptWriteLock,
 } from "../config/sessions/session-accessor.js";
-import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
+import {
+  waitForSessionTranscriptIndexReconcile,
+  waitForSessionTranscriptProjection,
+} from "../config/sessions/session-transcript-reconcile.js";
 import type { AgentModelConfig } from "../config/types.agents-shared.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { rotateAgentEventLifecycleGeneration } from "../infra/agent-events.js";
@@ -77,7 +80,8 @@ const restartRecoveryMocks = vi.hoisted(() => ({
   retryRestartAbortedMainSessionRecovery: vi.fn<
     typeof import("../agents/main-session-recovery/main-session-restart-recovery.js").retryRestartAbortedMainSessionRecovery
   >(async () => ({
-    recovered: 0,
+    started: 0,
+    settled: 0,
     failed: 1,
     skipped: 0,
   })),
@@ -329,6 +333,13 @@ async function writeMainSessionTranscript(
     },
     transcriptEvents,
   );
+  // Oversized fixture transcripts take the deferred rebuild path; history
+  // reads need the projection converged before the case under test runs.
+  await waitForSessionTranscriptProjection({
+    agentId: opts?.agentId ?? "main",
+    sessionId,
+    storePath,
+  });
 }
 
 async function withDirectChatSession(
@@ -3775,7 +3786,7 @@ describe("gateway server chat", () => {
             abortedLastRun: false,
             updatedAt: Date.now(),
           }));
-          return { recovered: 1, failed: 0, skipped: 0 };
+          return { started: 1, settled: 0, failed: 0, skipped: 0 };
         },
       );
       const context = createDirectChatContext();
@@ -3915,7 +3926,7 @@ describe("gateway server chat", () => {
             restartRecoveryDeliverySourceRunId: "replacement-source",
             updatedAt: Date.now(),
           }));
-          return { recovered: 0, failed: 0, skipped: 0 };
+          return { started: 0, settled: 0, failed: 0, skipped: 0 };
         },
       );
       const context = createDirectChatContext();
@@ -4561,11 +4572,13 @@ describe("gateway server chat", () => {
       });
       let turnAdoptionLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
       let onQueueDisposition: InternalGetReplyOptions["onFollowupQueueDisposition"];
+      let onQueuedFollowupReplyBatch: InternalGetReplyOptions["onQueuedFollowupReplyBatch"];
       const dispatchRelease = createDeferred();
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
         const replyOptions = (args as { replyOptions?: InternalGetReplyOptions }).replyOptions;
         turnAdoptionLifecycle = replyOptions?.turnAdoptionLifecycle;
         onQueueDisposition = replyOptions?.onFollowupQueueDisposition;
+        onQueuedFollowupReplyBatch = replyOptions?.onQueuedFollowupReplyBatch;
         turnAdoptionLifecycle?.onDeferred?.();
         await dispatchRelease.promise;
         return {};
@@ -4609,6 +4622,24 @@ describe("gateway server chat", () => {
           (payload as { state?: string }).state === "final",
       );
       expect(finalEvents).toHaveLength(1);
+      expect(onQueuedFollowupReplyBatch).toBeTypeOf("function");
+      await onQueuedFollowupReplyBatch?.({
+        kind: "queued-followup",
+        runId: "queued-followup-agent-run",
+        originatingChannel: "webchat",
+        payloads: [{ text: "queued follow-up answer" }],
+      });
+      expect(broadcast).toHaveBeenCalledWith(
+        "chat",
+        expect.objectContaining({
+          runId: "queued-followup-agent-run",
+          state: "final",
+          message: expect.objectContaining({
+            content: [{ type: "text", text: "queued follow-up answer" }],
+          }),
+        }),
+        { sessionKeys: ["agent:main:main"] },
+      );
       expect(context.chatQueuedTurns.has("idem-queued-followup")).toBe(true);
       expect(isSessionWorkAdmissionActive(storePath, ["agent:main:main", "sess-main"])).toBe(true);
       const { createAgentTurnService } = await import("./agent-turn/agent-turn-service.js");
@@ -6607,6 +6638,10 @@ describe("gateway server chat", () => {
       const hidden = await fetchChatMessage(ws, makeMainMessageParams("msg-hidden-assistant"));
       expect(hidden.ok).toBe(false);
       expect(hidden.unavailableReason).toBe("not_found");
+
+      const announce = await fetchChatMessage(ws, makeMainMessageParams("msg-announce"));
+      expect(announce.ok).toBe(false);
+      expect(announce.unavailableReason).toBe("not_found");
 
       const visible = await fetchChatMessage(ws, makeMainMessageParams("msg-visible-assistant"));
       expect(visible.ok).toBe(true);

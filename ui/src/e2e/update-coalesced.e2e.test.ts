@@ -10,6 +10,7 @@ const suite = createControlUiE2eSuite({
   unavailableMessage: (executablePath) => `Playwright Chromium is unavailable at ${executablePath}`,
 });
 
+const captureUiProofEnabled = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 const NATIVE_UPDATE_DECLINED_EVENT = "openclaw:native-update-declined";
 const MANAGED_UPDATE_HANDOFF_RESPONSE = {
   ok: true,
@@ -26,6 +27,17 @@ async function openUpdateConfirmation(page: Page): Promise<void> {
   await updateIssue.locator(".sidebar-update-card__action").click();
 }
 
+async function captureUpdateProof(
+  page: Page,
+  artifactDir: string,
+  fileName: string,
+): Promise<void> {
+  if (!captureUiProofEnabled) {
+    return;
+  }
+  await page.screenshot({ path: path.join(artifactDir, fileName) });
+}
+
 suite.define(() => {
   it("explains a disabled update to a read-only mobile operator", async () => {
     const artifactDir = path.resolve(".artifacts/control-ui-e2e/update-read-only-mobile");
@@ -35,7 +47,9 @@ suite.define(() => {
         hasTouch: true,
         isMobile: true,
         locale: "en-US",
-        recordVideo: { dir: artifactDir, size: { height: 1200, width: 555 } },
+        recordVideo: captureUiProofEnabled
+          ? { dir: artifactDir, size: { height: 1200, width: 555 } }
+          : undefined,
         serviceWorkers: "block",
         viewport: { height: 1200, width: 555 },
       },
@@ -65,12 +79,8 @@ suite.define(() => {
         expect(await action.evaluate((element) => (element as HTMLButtonElement).disabled)).toBe(
           false,
         );
-        await page.screenshot({ path: path.join(artifactDir, "disabled-update.png") });
+        await captureUpdateProof(page, artifactDir, "disabled-update.png");
 
-        const actionBounds = await action.boundingBox();
-        if (!actionBounds) {
-          throw new Error("disabled update action is not visible");
-        }
         const tooltip = updateIssue.locator("openclaw-tooltip wa-tooltip");
         await tooltip.evaluate((element) => {
           element.addEventListener(
@@ -79,14 +89,11 @@ suite.define(() => {
             { once: true },
           );
         });
-        await page.touchscreen.tap(
-          actionBounds.x + actionBounds.width / 2,
-          actionBounds.y + actionBounds.height / 2,
-        );
+        await updateIssue.locator(".sidebar-update-card__actions").tap();
         await expect.poll(() => tooltip.getAttribute("data-e2e-after-show")).not.toBeNull();
         expect(await tooltip.textContent()).toContain("Administrator access is required");
         expect(await gateway.getRequests("update.run")).toHaveLength(0);
-        await page.screenshot({ path: path.join(artifactDir, "disabled-update-tooltip.png") });
+        await captureUpdateProof(page, artifactDir, "disabled-update-tooltip.png");
       },
     );
   });
@@ -96,7 +103,9 @@ suite.define(() => {
     await suite.withPage(
       {
         locale: "en-US",
-        recordVideo: { dir: artifactDir, size: { height: 720, width: 1280 } },
+        recordVideo: captureUiProofEnabled
+          ? { dir: artifactDir, size: { height: 720, width: 1280 } }
+          : undefined,
         serviceWorkers: "block",
         viewport: { height: 720, width: 1280 },
       },
@@ -145,7 +154,7 @@ suite.define(() => {
         await updateIssue.locator(".sidebar-update-card__compact-reason").waitFor();
         expect(await page.locator(".sidebar-footer-update").count()).toBe(1);
         expect(pageErrors).toEqual([]);
-        await page.screenshot({ path: path.join(artifactDir, "package-update-failure.png") });
+        await captureUpdateProof(page, artifactDir, "package-update-failure.png");
       },
     );
   });
@@ -155,7 +164,9 @@ suite.define(() => {
     await suite.withPage(
       {
         locale: "en-US",
-        recordVideo: { dir: artifactDir, size: { height: 720, width: 1280 } },
+        recordVideo: captureUiProofEnabled
+          ? { dir: artifactDir, size: { height: 720, width: 1280 } }
+          : undefined,
         serviceWorkers: "block",
         viewport: { height: 720, width: 1280 },
       },
@@ -203,7 +214,7 @@ suite.define(() => {
           .waitFor();
         expect(await page.locator(".sidebar-footer-update").count()).toBe(1);
         expect(pageErrors).toEqual([]);
-        await page.screenshot({ path: path.join(artifactDir, "coalesced-restart-banner.png") });
+        await captureUpdateProof(page, artifactDir, "coalesced-restart-banner.png");
       },
     );
   });
@@ -232,7 +243,9 @@ suite.define(() => {
       await suite.withPage(
         {
           locale: "en-US",
-          recordVideo: { dir: artifactDir, size: { height: 720, width: 1280 } },
+          recordVideo: captureUiProofEnabled
+            ? { dir: artifactDir, size: { height: 720, width: 1280 } }
+            : undefined,
           serviceWorkers: "block",
           viewport: { height: 720, width: 1280 },
         },
@@ -293,9 +306,7 @@ suite.define(() => {
           expect(await gateway.getRequests("update.run")).toHaveLength(1);
           expect(await gateway.getRequests("update.status")).toHaveLength(expectedStatusRequests);
           expect(pageErrors).toEqual([]);
-          await page.screenshot({
-            path: path.join(artifactDir, `managed-handoff-${artifactName}.png`),
-          });
+          await captureUpdateProof(page, artifactDir, `managed-handoff-${artifactName}.png`);
         },
       );
     },
@@ -367,7 +378,7 @@ suite.define(() => {
       );
       await expect.poll(async () => (await gateway.getRequests("update.run")).length).toBe(1);
       expect(pageErrors).toEqual([]);
-      await page.screenshot({ path: path.join(artifactDir, "gateway-update-target.png") });
+      await captureUpdateProof(page, artifactDir, "gateway-update-target.png");
     } finally {
       await context.close();
     }

@@ -39,6 +39,8 @@ import { createStorageMock } from "./storage.ts";
 
 // The attention widget owns independent health RPC tests. Keep those requests
 // out of sidebar client call-order assertions.
+// Sidebar attention is inert in this harness; cover attention rendering in
+// sidebar-attention.test.ts, not app-sidebar cases.
 vi.mock("../components/sidebar-attention.ts", () => ({}));
 
 export type SessionGroupMutationResult = Awaited<ReturnType<SessionCapability["groupsRename"]>>;
@@ -151,6 +153,7 @@ export function createGatewayHarness(client: GatewayBrowserClient) {
       bootstrapToken: "",
       password: "",
     },
+    connectionRevision: 0,
     setSessionKey: () => undefined,
     subscribe(listener: (next: ApplicationGatewaySnapshot) => void) {
       listeners.add(listener);
@@ -242,6 +245,7 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
   let canonicalListRevision = 1;
   const listeners = new Set<(next: SessionState) => void>();
   const pullRequestSummaries = new Map<string, SessionCatalogPullRequestSummary>();
+  const archiveVisibilityByKey = new Map<string, "pending" | "archived">();
   const groupsPut = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsRename = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
   const groupsDelete = vi.fn(() => Promise.resolve<SessionGroupMutationResult>("completed"));
@@ -354,6 +358,17 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     groupsDelete,
     create,
     patch,
+    archiveVisibility: (key: string) => archiveVisibilityByKey.get(key),
+    setArchiveVisibility(key: string, visibility: "pending" | "archived" | undefined) {
+      if (visibility) {
+        archiveVisibilityByKey.set(key, visibility);
+      } else {
+        archiveVisibilityByKey.delete(key);
+      }
+      for (const listener of listeners) {
+        listener(state);
+      }
+    },
     assignOwner,
     patchMany,
     delete: deleteSession,
@@ -471,6 +486,11 @@ export function createSessionsHarness(agentId: string, keys: string[]) {
     unsubscribeMessages,
     publish,
     publishList(statePatch: Partial<SessionState>) {
+      for (const row of statePatch.result?.sessions ?? []) {
+        if (row.archived !== true && archiveVisibilityByKey.get(row.key) === "archived") {
+          archiveVisibilityByKey.delete(row.key);
+        }
+      }
       canonicalListRevision += 1;
       publish(statePatch);
     },
