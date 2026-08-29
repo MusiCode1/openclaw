@@ -139,6 +139,9 @@ function bundledPluginSweepLane(index: number): ReturnType<typeof summarizeLane>
 
 describe("scripts/lib/docker-e2e-plan", () => {
   it.each([
+    ["codex-media-path", ["@openclaw/codex"]],
+    ["live-mcp-code-mode-gateway", ["@openclaw/codex"]],
+    ["release-typed-onboarding", ["@openclaw/codex"]],
     ["npm-onboard-channel-agent", ["@openclaw/codex"]],
     ["npm-onboard-discord-channel-agent", ["@openclaw/codex"]],
     ["npm-onboard-slack-channel-agent", ["@openclaw/codex"]],
@@ -347,7 +350,7 @@ describe("scripts/lib/docker-e2e-plan", () => {
       bareImage: true,
       e2eImage: true,
       functionalImage: true,
-      liveImage: true,
+      liveImage: false,
       package: true,
       prepublishPluginRegistry: true,
     });
@@ -1363,6 +1366,25 @@ describe("scripts/lib/docker-e2e-plan", () => {
     });
   });
 
+  it("preserves the shared image selection when launching the live gateway lane", () => {
+    const root = tempDirs.make("openclaw-live-gateway-image-");
+    const script = join(root, "scripts/test-live-gateway-models-docker.sh");
+    mkdirSync(dirname(script), { recursive: true });
+    writeFileSync(script, 'printf "%s\\n" "$OPENCLAW_IMAGE"\n');
+    const lane = requireFirstLane(planFor({ selectedLaneNames: ["live-gateway"] }));
+
+    const image = execFileSync("bash", ["-c", lane.command], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        OPENCLAW_DOCKER_E2E_TRUSTED_HARNESS_DIR: root,
+        OPENCLAW_IMAGE: "openclaw:shared-candidate",
+      },
+    });
+
+    expect(image.trim()).toBe("openclaw:shared-candidate");
+  });
+
   it("derives live Docker credentials from lane resources", () => {
     const cases = [
       { credentials: ["anthropic", "gemini"], name: "live-models" },
@@ -1431,7 +1453,7 @@ describe("scripts/lib/docker-e2e-plan", () => {
       bareImage: true,
       e2eImage: true,
       functionalImage: false,
-      liveImage: true,
+      liveImage: false,
       package: true,
       prepublishPluginRegistry: false,
     });
@@ -1487,7 +1509,7 @@ describe("scripts/lib/docker-e2e-plan", () => {
     expect(lane.resources).toEqual(["docker", "live", "live:openai", "npm"]);
     expect(lane.stateScenario).toBe("empty");
     expect(plan.needs.bareImage).toBe(true);
-    expect(plan.needs.liveImage).toBe(true);
+    expect(plan.needs.liveImage).toBe(false);
     expect(plan.needs.package).toBe(true);
   });
 
@@ -1566,7 +1588,7 @@ describe("scripts/lib/docker-e2e-plan", () => {
       bareImage: true,
       e2eImage: true,
       functionalImage: true,
-      liveImage: true,
+      liveImage: false,
       package: true,
       prepublishPluginRegistry: false,
     });
