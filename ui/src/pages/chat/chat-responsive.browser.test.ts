@@ -92,6 +92,16 @@ async function createSharedAppPage(): Promise<Page> {
     page.on("pageerror", (error) => sharedAppPageErrors.push(error.message));
     await page.route("https://cdn.example/**", async (route) => {
       const request = route.request();
+      if (request.url() === SHARED_APP_IMAGE_URL) {
+        await route.fulfill({
+          contentType: "image/png",
+          body: Buffer.from(
+            "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAHElEQVR4nGP4z8DwnxLMMGrAsDCAQv2jBgwPAwAxtf4Q24P5oAAAAABJRU5ErkJggg==",
+            "base64",
+          ),
+        });
+        return;
+      }
       const fileName = decodeURIComponent(new URL(request.url()).pathname.split("/").at(-1) ?? "");
       const media = SHARED_APP_PLAYBACK_MEDIA.find(([candidate]) => candidate === fileName);
       if (!media) {
@@ -1908,7 +1918,6 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
                     <div class="chat-topbar-notices"></div>
                     <div class="chat-main__conversation">
                       <div class="chat-thread" role="log"><div class="chat-thread-inner">Transcript</div></div>
-                      <button class="btn btn--sm chat-history-available">Earlier history available</button>
                       <div class="chat-gutter-stack"><div class="task-suggestions">Task suggestion</div></div>
                       <div class="agent-chat__composer-shell">
                         <div class="agent-chat__composer-overlay"></div>
@@ -1979,21 +1988,16 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         ).toBe("absolute");
         const header = await getBoundingBox(page, ".chat-pane__header");
         const overlayTops = await Promise.all(
-          [
-            ".chat-history-available",
-            ".chat-topbar-notices",
-            ".chat-gutter-stack",
-            ".app-toast",
-          ].map(async (selector) => ({ selector, top: (await getBoundingBox(page, selector)).y })),
+          [".chat-topbar-notices", ".chat-gutter-stack", ".app-toast"].map(async (selector) => ({
+            selector,
+            top: (await getBoundingBox(page, selector)).y,
+          })),
         );
         if (label.startsWith("mobile")) {
           for (const overlay of overlayTops) {
             expect(overlay.top, overlay.selector).toBeGreaterThanOrEqual(header.y + header.height);
           }
         } else {
-          expect(
-            overlayTops.find((overlay) => overlay.selector === ".chat-history-available")?.top,
-          ).toBeCloseTo(header.y + header.height + 10, 0);
           expect(
             overlayTops.find((overlay) => overlay.selector === ".chat-topbar-notices")?.top,
           ).toBeCloseTo(8, 0);
@@ -2663,8 +2667,8 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         await messageText.waitFor({ timeout: APP_FIRST_RENDER_TIMEOUT_MS });
         expect(await context.isVisible()).toBe(false);
 
-        // The shared group also contains an aborted image; finish its fallback
-        // layout before measuring whether opening the tooltip moves the row.
+        // Finish the shared image layout before measuring whether opening the
+        // tooltip moves the row.
         await messageText.hover();
         await page.waitForFunction(
           () => document.querySelector<HTMLImageElement>(".chat-message-image")?.complete,
@@ -2798,17 +2802,33 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
       );
       const card = player.locator(".chat-assistant-attachment-card");
       await card.waitFor({ state: "visible", timeout: 10_000 });
-      await card.scrollIntoViewIfNeeded();
+      await player.evaluate((element) => {
+        element
+          .querySelector(".chat-assistant-attachment-card")!
+          .scrollIntoView({ block: "center" });
+      });
+      const requireMetadata = fileName !== "reply.m4a" && fileName !== "reply.mp4";
+      // Read the stable player: an error replaces its media child and card.
+      // Only AAC/H.264 fixtures may fall back; other codecs must actually load.
+      await expect
+        .poll(
+          () =>
+            player.evaluate(
+              (element, { type: mediaType, requireMetadata: needsMetadata }) => {
+                const media = element.querySelector<HTMLMediaElement>(mediaType);
+                return (
+                  (!needsMetadata &&
+                    element.querySelector(".chat-assistant-attachment-card--compact") !== null) ||
+                  (media !== null && (!needsMetadata || media.readyState >= 1))
+                );
+              },
+              { type, requireMetadata },
+            ),
+          { timeout: 10_000 },
+        )
+        .toBe(true);
       const compactFallback =
         (await player.locator(".chat-assistant-attachment-card--compact").count()) > 0;
-      if (!compactFallback && fileName !== "reply.m4a" && fileName !== "reply.mp4") {
-        const media = player.locator(type);
-        await expect
-          .poll(() => media.evaluate((element) => (element as HTMLMediaElement).readyState), {
-            timeout: 10_000,
-          })
-          .toBeGreaterThanOrEqual(1);
-      }
       if (!compactFallback) {
         expect(
           sharedAppPlaybackRequests.some((url) => {
@@ -2888,6 +2908,12 @@ describeBrowserLayout.concurrent("chat responsive browser layout", () => {
         for (const width of [320, 560]) {
           await page.setViewportSize({ width, height: 852 });
           const failedCard = cards.filter({ hasText: "settings.toml" });
+          // The viewport ACK does not settle the retained pane's responsive geometry.
+          await failedCard.scrollIntoViewIfNeeded();
+          await waitForLayoutSettled(
+            page,
+            ".chat-main__conversation, .chat-assistant-attachment-card, .chat-assistant-attachment-card__status-reason",
+          );
           const mobileStatusLayout = await failedCard.evaluate((card) => {
             const badge = card.querySelector<HTMLElement>(
               ".chat-assistant-attachment-card__status-badge",

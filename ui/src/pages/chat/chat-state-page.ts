@@ -107,6 +107,7 @@ async function loadPageAssistantIdentity(
       !state.connected ||
       state.assistantIdentityRequestVersion !== requestVersion ||
       state.sessionKey.trim() !== expectedSessionKey ||
+      resolveAgentIdForSession(state) !== agentId ||
       !identity
     ) {
       return;
@@ -212,9 +213,9 @@ export function createPageState(
     chatModelSwitchPromises: {},
     chatModelPickerOpenSessionKey: null,
     chatModelsLoading: false,
-    chatMetadataRequestVersion: 0,
     chatModelCatalog: [],
     chatModelCatalogError: null,
+    modelAuthStatusRequestVersion: 0,
     modelAuthStatusResult: null,
     modelAuthStatusError: null,
     sessionsResult: null,

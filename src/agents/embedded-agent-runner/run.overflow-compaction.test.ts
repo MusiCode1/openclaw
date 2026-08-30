@@ -1,19 +1,23 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { delegateCompactionToRuntime } from "../../context-engine/delegate.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
 import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import type { AgentRuntimeAuthPlan } from "../runtime-plan/types.js";
+import { normalizeUsage } from "../usage.js";
 import {
   compactEmbeddedRunForRecovery,
   createEmbeddedRunCompactionRuntime,
   type EmbeddedRunCompactionRecoveryInput,
 } from "./run/compaction-runtime.js";
+import { readCompactionUsageRecorder } from "./run/compaction-usage-bridge.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import type { PreparedEmbeddedRunInput } from "./run/execution-context.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
+import { createUsageAccumulator } from "./usage-accumulator.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const completionMocks = vi.hoisted(() => ({
@@ -21,8 +25,12 @@ const completionMocks = vi.hoisted(() => ({
   completeWithPreparedSimpleCompletionModel: vi.fn(),
   resolveSimpleCompletionSelectionForAgent: vi.fn(),
 }));
+const compactRuntimeMocks = vi.hoisted(() => ({
+  compactEmbeddedAgentSessionOnDemand: vi.fn(),
+}));
 
 vi.mock("../simple-completion-runtime.js", () => completionMocks);
+vi.mock("./compact.runtime.js", () => compactRuntimeMocks);
 
 // Keep this dedicated leaf on the compaction composition boundary. Runtime/auth/lane policy is
 // covered at its direct owners so this shard never reloads the complete public runner graph.
@@ -57,9 +65,12 @@ function makeAttempt(overrides: Partial<EmbeddedRunAttemptResult> = {}): Embedde
   };
 }
 
-function makeContextEngine(compact = vi.fn()): ContextEngine {
+function makeContextEngine(
+  compact: ContextEngine["compact"] | ReturnType<typeof vi.fn> = vi.fn(),
+  ownsCompaction = true,
+): ContextEngine {
   return {
-    info: { id: "test", name: "Test", ownsCompaction: true },
+    info: { id: "test", name: "Test", ownsCompaction },
     ingest: vi.fn(),
     assemble: vi.fn(),
     compact,
@@ -109,12 +120,14 @@ function makeRecoveryInput(
     }),
     prepareCompactedTranscriptRetry: vi.fn(async () => {}),
     armPostCompactionGuard: vi.fn(),
+    usageAccumulator: createUsageAccumulator(),
     ...overrides,
   };
 }
 
 describe("compactEmbeddedRunForRecovery", () => {
   beforeEach(() => {
+    compactRuntimeMocks.compactEmbeddedAgentSessionOnDemand.mockReset();
     completionMocks.prepareSimpleCompletionModelForAgent.mockReset();
     completionMocks.completeWithPreparedSimpleCompletionModel.mockReset();
     completionMocks.resolveSimpleCompletionSelectionForAgent.mockReset();
@@ -210,6 +223,48 @@ describe("compactEmbeddedRunForRecovery", () => {
     });
   });
 
+  it.each(["overflow", "timeout_recovery"] as const)(
+    "lets delegated native %s compaction use its progress-aware watchdog",
+    async (trigger) => {
+      vi.useFakeTimers();
+      try {
+        compactRuntimeMocks.compactEmbeddedAgentSessionOnDemand.mockImplementationOnce(
+          (params: { compactionTimeoutReset?: () => void }) =>
+            new Promise((resolve) => {
+              setTimeout(() => params.compactionTimeoutReset?.(), 900);
+              setTimeout(() => resolve({ ok: true, compacted: false }), 1_100);
+            }),
+        );
+        const contextEngine = makeContextEngine(delegateCompactionToRuntime, false);
+        const pending = compactEmbeddedRunForRecovery(
+          makeRecoveryInput({
+            runParams: {
+              ...baseRunParams,
+              config: { agents: { defaults: { compaction: { timeoutSeconds: 1 } } } },
+            },
+            contextEngine,
+          }),
+          {
+            tokenBudget: 200_000,
+            trigger,
+            diagId: `diag-${trigger}`,
+            attempt: 1,
+            maxAttempts: 3,
+          },
+        );
+        const assertion = expect(pending).resolves.toMatchObject({
+          result: { ok: true, compacted: false },
+        });
+
+        await vi.advanceTimersByTimeAsync(1_100);
+        await assertion;
+        expect(compactRuntimeMocks.compactEmbeddedAgentSessionOnDemand).toHaveBeenCalledOnce();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("does not trust the active run fallback during recovery compaction", async () => {
     const compact = vi.fn(async (params: { runtimeContext?: ContextEngineRuntimeContext }) => {
       await params.runtimeContext?.llm?.complete({
@@ -242,6 +297,37 @@ describe("compactEmbeddedRunForRecovery", () => {
       ),
     ).rejects.toThrow("not bound to an active session agent");
     expect(completionMocks.prepareSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+  });
+
+  it("accounts recovery model usage even when compaction fails", async () => {
+    const compact = vi.fn(async (params: { runtimeContext?: ContextEngineRuntimeContext }) => {
+      const usage = normalizeUsage({
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 150,
+      });
+      if (!usage) {
+        throw new Error("expected normalized usage");
+      }
+      readCompactionUsageRecorder(params.runtimeContext)?.(usage);
+      return { ok: false as const, compacted: false as const, reason: "invalid summary" };
+    });
+    const usageAccumulator = createUsageAccumulator();
+
+    await compactEmbeddedRunForRecovery(
+      makeRecoveryInput({ contextEngine: makeContextEngine(compact), usageAccumulator }),
+      {
+        tokenBudget: 200_000,
+        trigger: "overflow",
+        diagId: "diag-usage",
+        attempt: 1,
+        maxAttempts: 3,
+      },
+    );
+
+    expect(usageAccumulator).toMatchObject({ input: 100, output: 50, total: 150 });
   });
 });
 

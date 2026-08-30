@@ -136,7 +136,8 @@ vi.mock(
   },
 );
 
-vi.mock("../plugins/provider-thinking.js", () => ({
+vi.mock("../plugins/provider-thinking.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-thinking.js")>()),
   resolveEffectiveThinkingProfile: (params: { context?: { reasoning?: boolean } }) => {
     const offOnly =
       params.context?.reasoning === false ||
@@ -421,8 +422,8 @@ async function callDirectChatHandler(
   method: DirectChatMethod,
   options: GatewayRequestHandlerOptions,
 ) {
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  await expectDefined(chatHandlers[method], `${method} test invariant`)(options);
+  const { coreGatewayHandlers } = await import("./server-methods.js");
+  await expectDefined(coreGatewayHandlers[method], `${method} test invariant`)(options);
 }
 
 type DirectChatCallOptions = Omit<

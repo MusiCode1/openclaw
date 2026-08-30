@@ -232,11 +232,18 @@ async function prepareExtensionPackageBoundaryArtifacts(argv: string[] = process
     rootDir: `extensions/${id}`,
     required: [`${LOCAL_PLUGIN_ROOT}/${id}/${entry}.d.ts`],
   }));
-  let before = new BoundaryInputSnapshot(repoRoot);
-  for (const batch of [[sdk], mode === "all" ? plugins : []]) {
+  const batches = [[sdk], mode === "all" ? plugins : []].map((batch) =>
+    batch.map((unit) => {
+      fs.mkdirSync(resolve(repoRoot, unit.outDir), { recursive: true });
+      return { ...unit, outputRoot: fs.realpathSync(resolve(repoRoot, unit.outDir)) };
+    }),
+  );
+  for (const batch of batches) {
     if (!batch.length) {
       continue;
     }
+    // Upstream pruning changes consumer topology; snapshot after the preceding batch's cleanup.
+    const before = new BoundaryInputSnapshot(repoRoot);
     const pending = batch
       .map((unit) => {
         const recordPath = resolve(repoRoot, BOUNDARY_CACHE_ROOT, `${unit.id}.json`);
@@ -262,9 +269,15 @@ async function prepareExtensionPackageBoundaryArtifacts(argv: string[] = process
         ];
         const previous = readArtifactRecord(recordPath);
         // Prime config/toolchain/topology before starting even an uncached owner.
-        before.signature(unit.config, args, []);
+        before.signature(unit.config, args, [], unit.outputRoot);
         if (
-          before.matches(previous, unit.config, args, [...unit.required, buildInfo], unit.outDir)
+          before.matches(
+            previous,
+            unit.config,
+            args,
+            [...unit.required, buildInfo],
+            unit.outputRoot,
+          )
         ) {
           process.stdout.write(`[${unit.id} boundary dts] fresh; skipping\n`);
           return null;
@@ -314,6 +327,7 @@ async function prepareExtensionPackageBoundaryArtifacts(argv: string[] = process
         outputs,
         before,
         unit.startedAt,
+        unit.outputRoot,
       );
       return Object.assign(unit, { record });
     });
@@ -331,7 +345,6 @@ async function prepareExtensionPackageBoundaryArtifacts(argv: string[] = process
       writeArtifactRecord(unit.recordPath, unit.record);
       process.stdout.write(`[${unit.id} boundary dts] emitted ${unit.outputs.size} files\n`);
     }
-    before = after;
   }
 }
 

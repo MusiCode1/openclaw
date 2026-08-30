@@ -18,11 +18,14 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import type { WorkerComputerLaunchDescriptor } from "../../worker/launch-descriptor.js";
 import type { MintedWorkerCredential } from "./credential.js";
+import { measureNodeWorkerLaunchBytes } from "./node-launch-adapter.js";
 import {
   createWorkerSessionPlacementStore,
   type WorkerSessionPlacementStore,
 } from "./placement-store.js";
+import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
 import { createWorkerSessionTurnPlacementProvider as createRawWorkerSessionTurnPlacementProvider } from "./worker-turn-launcher.js";
 import { createWorkerWorkspaceOperationCoordinator } from "./workspace-operation-coordinator.js";
 
@@ -39,6 +42,16 @@ export const OWNER_EPOCH = 3;
 const BUNDLE_HASH = "a".repeat(64);
 export const MANIFEST_REF = `sha256:${"b".repeat(64)}`;
 const HOST_KEY = [["ssh", "ed25519"].join("-"), "AAAA"].join(" ");
+
+export const measureLaunchTurn: WorkerTurnTunnelHandle["measureLaunchTurn"] = (plan, claim) =>
+  measureNodeWorkerLaunchBytes("fixture-node", {
+    environmentSession: 1,
+    launchId: plan.assignment.turnId,
+    gatewayNamespace: "fixture-gateway",
+    expectedBundleHash: plan.admission.handshake.bundleHash,
+    placementGeneration: claim.placementGeneration,
+    descriptor: plan,
+  });
 
 let testState: OpenClawTestState;
 let database: OpenClawStateDatabase;
@@ -255,6 +268,21 @@ export function browserEnvironment(): WorkerTurnEnvironmentRecord {
   };
 }
 
+export function computerDescriptor(nodeId: string): WorkerComputerLaunchDescriptor {
+  return {
+    nodeId,
+    computerUse: {
+      contractVersion: 2,
+      provider: { id: "fixture", label: "Fixture", generation: "generation-1" },
+      actions: ["screenshot"],
+      targets: ["screen"],
+      deliveryModes: ["foreground"],
+      observations: ["image"],
+      features: { recording: false, agentCursor: false, multiDisplay: false },
+    },
+  };
+}
+
 export function credential(deliveryId = "c".repeat(43)): MintedWorkerCredential {
   return {
     credential: ["worker", "turn", "credential"].join("-"),
@@ -333,6 +361,7 @@ export function turn(runId = "run-worker-turn", executionIdentity = false) {
     runId,
     provider: "openai",
     model: "gpt-test",
+    modelHasVision: true,
     config,
   };
 }

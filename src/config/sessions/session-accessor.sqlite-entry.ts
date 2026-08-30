@@ -1,3 +1,4 @@
+import { normalizeInternalTurnContext } from "../../auto-reply/internal-turn-source.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import {
   executeSqliteQuerySync,
@@ -571,9 +572,8 @@ async function patchSqliteSessionEntrySnapshot(
       existingEntry: existing ? cloneSessionEntry(existing) : undefined,
     });
     // A fallback supplies identity, not an existing node's immutable creation policy.
-    const creatingRequiredSession = !existing && patch?.sandbox === "required";
-    const mergeBase = creatingRequiredSession ? undefined : writeBase;
-    const creationPatch = creatingRequiredSession ? { ...writeBase, ...patch } : patch;
+    const mergeBase = existing ? writeBase : undefined;
+    const creationPatch = !existing && patch ? { ...writeBase, ...patch } : patch;
     const merged = !creationPatch
       ? undefined
       : options.replaceEntry
@@ -617,7 +617,7 @@ async function patchSqliteSessionEntrySnapshot(
         }),
       );
       currentIdentity = readSessionIdentitySnapshot(writeDatabase, [sessionKey]);
-      result = cloneSessionEntry(persisted.sandbox === "required" ? persisted : next);
+      result = cloneSessionEntry(persisted);
     }, toDatabaseOptions(resolved));
     emitCommittedSessionIdentityDiff(previousIdentity, currentIdentity);
     return { maintenancePlans, result };
@@ -643,6 +643,7 @@ export async function recordInboundSessionMeta(params: {
   groupResolution?: GroupKeyResolution | null;
   createIfMissing?: boolean;
 }): Promise<SessionEntry | null> {
+  normalizeInternalTurnContext(params.ctx);
   const createIfMissing = params.createIfMissing ?? true;
   return await patchSessionEntryCore(
     { sessionKey: params.sessionKey, storePath: params.storePath },
@@ -661,7 +662,7 @@ export async function recordInboundSessionMeta(params: {
         ...buildSessionCreationStamp(
           params.ctx.SessionCreation ?? {
             via: "channel",
-            ...(senderId ? { actor: { type: "human", id: senderId } } : {}),
+            ...(senderId ? { actor: { type: "human", source: "channel", id: senderId } } : {}),
           },
         ),
         ...metadataPatch,
@@ -691,6 +692,9 @@ export async function updateSessionLastRoute(params: {
   createIfMissing?: boolean;
   assertCommitAllowed?: () => void;
 }): Promise<SessionEntry | null> {
+  if (params.ctx) {
+    normalizeInternalTurnContext(params.ctx);
+  }
   const createIfMissing = params.createIfMissing ?? true;
   return await patchSessionEntryCore(
     { sessionKey: params.sessionKey, storePath: params.storePath },
@@ -715,7 +719,9 @@ export async function updateSessionLastRoute(params: {
         ...buildSessionCreationStamp(
           params.ctx?.SessionCreation ?? {
             via: "channel",
-            ...(senderId ? { actor: { type: "human" as const, id: senderId } } : {}),
+            ...(senderId
+              ? { actor: { type: "human" as const, source: "channel" as const, id: senderId } }
+              : {}),
           },
         ),
         ...routePatch,
