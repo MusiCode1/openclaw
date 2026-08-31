@@ -52,9 +52,11 @@ const expandedAssistantMessagesBySession = new Map<
 >();
 const initializedToolCardsBySession = new Map<string, Set<string>>();
 const lastAutoExpandPrefBySession = new Map<string, boolean>();
+// This memo only skips repeated work. Keeping its transcript strongly would
+// retain message payloads after the owning pane and message cache release them.
 const lastToolCardItemsBySession = new Map<
   string,
-  { items: readonly (ChatItem | MessageGroup)[]; isFilteredProjection: boolean }
+  { items: WeakRef<readonly RenderChatItem[]>; isFilteredProjection: boolean }
 >();
 
 export function resetChatThreadState(paneId?: string): void {
@@ -78,6 +80,8 @@ function sameMessageGroup(previous: MessageGroup, next: MessageGroup): boolean {
   return (
     previous.role === next.role &&
     previous.senderLabel === next.senderLabel &&
+    previous.senderSession?.sessionKey === next.senderSession?.sessionKey &&
+    previous.senderSession?.agentId === next.senderSession?.agentId &&
     JSON.stringify(previous.sender) === JSON.stringify(next.sender) &&
     JSON.stringify(previous.replyToSender) === JSON.stringify(next.replyToSender) &&
     previous.isStreaming === next.isStreaming &&
@@ -195,6 +199,8 @@ function stabilizeChatItems(
         prior.role !== item.role ||
         prior.runId !== item.runId ||
         prior.senderLabel !== item.senderLabel ||
+        prior.senderSession?.sessionKey !== item.senderSession?.sessionKey ||
+        prior.senderSession?.agentId !== item.senderSession?.agentId ||
         senderIdentityKey(prior.sender) !== senderIdentityKey(item.sender)
       ) {
         continue;
@@ -448,7 +454,7 @@ export function syncToolCardExpansionState(
   const previousProjection = getSessionCacheValue(lastToolCardItemsBySession, sessionKey);
   const previousAutoExpand = getSessionCacheValue(lastAutoExpandPrefBySession, sessionKey) ?? false;
   if (
-    previousProjection?.items === items &&
+    previousProjection?.items.deref() === items &&
     previousProjection.isFilteredProjection === isFilteredProjection &&
     previousAutoExpand === autoExpandToolCalls
   ) {
@@ -497,6 +503,9 @@ export function syncToolCardExpansionState(
       }
     }
   }
-  setSessionCacheValue(lastToolCardItemsBySession, sessionKey, { items, isFilteredProjection });
+  setSessionCacheValue(lastToolCardItemsBySession, sessionKey, {
+    items: new WeakRef(items),
+    isFilteredProjection,
+  });
   setSessionCacheValue(lastAutoExpandPrefBySession, sessionKey, autoExpandToolCalls);
 }

@@ -1,16 +1,13 @@
 import { getSafeSessionStorage } from "../../local-storage.ts";
-import { normalizeStoredSession } from "./outbox-store-codec.ts";
 import {
   nextDraftRevision,
-  rememberedDraftAttempt,
-  rememberedDraftRevision,
+  readDraftRevisionState,
   rememberDraftAttempt,
   rememberDraftRevision,
 } from "./outbox-store-draft-state.ts";
 import {
   storageTargetForGateway,
-  resolveComposerStorageScope,
-  resolveStoredComposerSession,
+  storedChatOutboxScopeKey,
   writeStoredOutboxStore,
   readStoredOutboxStore,
   notifyStoredChatOutboxChanges,
@@ -30,7 +27,7 @@ type StoredComposerRetirement = {
 };
 
 export function retireStoredComposerDrafts(
-  state: ChatComposerScope,
+  state: Pick<ChatComposerScope, "settings">,
   targets: readonly StoredComposerRetirementTarget[],
 ) {
   const storageTarget = storageTargetForGateway(state.settings?.gatewayUrl);
@@ -45,13 +42,9 @@ export function retireStoredComposerDrafts(
         if (!target.key.trim()) {
           return [];
         }
-        const resolved = resolveComposerStorageScope(state, target.key, target.agentId);
         return [
           {
-            scope: {
-              sessionKey: resolved.conversationKey,
-              ...(resolved.routingAgentId ? { agentId: resolved.routingAgentId } : {}),
-            },
+            scope: { sessionKey: target.key, agentId: target.agentId },
             minimumRevision: target.retireBeforeRevision,
             retireBeforeRevision: target.retireBeforeRevision,
           },
@@ -71,47 +64,28 @@ export function retireStoredComposerDrafts(
       if (!target.key.trim()) {
         return { gatewayOwner: storageTarget.gatewayOwner, retirements, storageFailed: true };
       }
-      const resolved = resolveComposerStorageScope(
-        state,
-        target.key,
-        target.agentId,
-        store.mainAlias,
-      );
-      const scope: StoredChatOutboxScope = {
-        sessionKey: resolved.conversationKey,
-        ...(resolved.routingAgentId ? { agentId: resolved.routingAgentId } : {}),
-      };
-      const resolvedSession = resolveStoredComposerSession(
-        store,
-        state,
-        scope.sessionKey,
-        scope.agentId,
-      );
-      changed ||= resolvedSession.migrated;
-      const storedRevision = resolvedSession.session?.draftRevision ?? 0;
-      const currentRevision = Math.max(
+      // Deletion targets are captured identities, not new admissions under current defaults.
+      const scope = { sessionKey: target.key, agentId: target.agentId };
+      const storeSessionKey = storedChatOutboxScopeKey(scope);
+      const session = store.sessions[storeSessionKey];
+      const storedRevision = session?.draftRevision ?? 0;
+      const currentRevision = readDraftRevisionState(
+        storage,
+        storageTarget.key,
+        storeSessionKey,
         storedRevision,
-        rememberedDraftRevision(storage, storageTarget.key, resolvedSession.storeSessionKey),
-        rememberedDraftAttempt(storage, storageTarget.key, resolvedSession.storeSessionKey),
-      );
+      ).latestAttempt;
       let minimumRevision = target.retireBeforeRevision;
       if (storedRevision < target.retireBeforeRevision) {
         minimumRevision = nextDraftRevision(Math.max(currentRevision, target.retireBeforeRevision));
-        rememberDraftAttempt(
-          storage,
-          storageTarget.key,
-          resolvedSession.storeSessionKey,
-          minimumRevision,
-        );
-        visibleChanged ||=
-          Boolean(resolvedSession.session?.draft) ||
-          Boolean(resolvedSession.session?.queue?.length);
-        store.sessions[resolvedSession.storeSessionKey] = {
+        rememberDraftAttempt(storage, storageTarget.key, storeSessionKey, minimumRevision);
+        visibleChanged ||= Boolean(session?.draft) || Boolean(session?.queue?.length);
+        store.sessions[storeSessionKey] = {
           draftRevision: minimumRevision,
           updatedAt: Date.now(),
         };
         written.push({
-          storeSessionKey: resolvedSession.storeSessionKey,
+          storeSessionKey,
           revision: minimumRevision,
         });
         changed = true;
@@ -128,7 +102,7 @@ export function retireStoredComposerDrafts(
     writeStoredOutboxStore(storage, storageTarget, store);
     const persisted = readStoredOutboxStore(storage, storageTarget);
     for (const { storeSessionKey, revision } of written) {
-      const session = normalizeStoredSession(persisted.sessions[storeSessionKey]);
+      const session = persisted.sessions[storeSessionKey];
       if (
         session?.draftRevision !== revision ||
         Boolean(session.draft) ||

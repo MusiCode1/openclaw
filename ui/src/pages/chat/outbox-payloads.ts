@@ -2,6 +2,7 @@ import { t } from "../../i18n/index.ts";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import {
   outboxPayloadTab,
+  observeOutboxRecoveryOwner,
   readOutboxPayload,
   removeOutboxPayloads,
   writeOutboxPayload,
@@ -13,14 +14,13 @@ import {
   readBlobAsDataUrl,
 } from "./durable-composer-persistence.ts";
 
-type Host = ChatComposerScope & {
-  client?: { recoveryScope?: string; recoveryScopeReady?: boolean } | null;
-  selectedChatSessionIncognito?: boolean;
-};
+type Host = ChatComposerScope;
+type PayloadUpdate = Pick<ChatQueueItem, "attachments" | "attachmentPayload"> & {
+  attachmentStorageError?: undefined;
+} & ({ sendState: "unconfirmed"; sendError: string } | { sendState?: never; sendError?: never });
 type PayloadResult =
-  | { status: "ready"; item: ChatQueueItem }
+  | { status: "ready"; update: PayloadUpdate }
   | { status: "failed"; reason: OutboxPayloadFailure };
-const knownOwners = new WeakMap<object, string>();
 
 export function outboxPayloadError(reason: OutboxPayloadFailure): string {
   return t(
@@ -41,27 +41,15 @@ export function failOutboxPayload(item: ChatQueueItem, reason: OutboxPayloadFail
   };
 }
 
-export function observeOutboxRecoveryOwner(host: Host): string | undefined {
-  const client = host.client;
-  if (!client) {
-    return undefined;
-  }
-  if (client.recoveryScopeReady && client.recoveryScope) {
-    knownOwners.set(client, client.recoveryScope);
-  }
-  const remembered = knownOwners.get(client);
-  return remembered === client.recoveryScope ? remembered : undefined;
-}
-
 export function captureOutboxPayloadOwner(host: Host): () => boolean {
   const client = host.client;
   const gateway = host.settings?.gatewayUrl;
-  const recoveryScope = client?.recoveryScope;
+  const recoveryScope = observeOutboxRecoveryOwner(host);
   const incognito = host.selectedChatSessionIncognito;
   return () =>
     host.client === client &&
     host.settings?.gatewayUrl === gateway &&
-    host.client?.recoveryScope === recoveryScope &&
+    observeOutboxRecoveryOwner(host) === recoveryScope &&
     host.selectedChatSessionIncognito === incognito;
 }
 
@@ -71,14 +59,14 @@ async function preparePayload(
   purpose: "send" | "handoff",
 ): Promise<PayloadResult> {
   if (!item.attachments?.length && !item.attachmentPayload && !item.attachmentStorageError) {
-    return { status: "ready", item };
+    return { status: "ready", update: {} };
   }
   // Incognito keeps the existing tab-only inline outbox and its quota. It must
   // never acquire restart-persistent Blob ownership or hydrate a regular row.
   if (host.selectedChatSessionIncognito) {
     return item.attachmentPayload
       ? { status: "failed", reason: "unavailable" }
-      : { status: "ready", item };
+      : { status: "ready", update: {} };
   }
   const recoveryScope = observeOutboxRecoveryOwner(host);
   if (!recoveryScope) {
@@ -133,6 +121,11 @@ async function preparePayload(
       if (!isCurrent()) {
         return { status: "failed", reason: "unavailable" };
       }
+      const update = {
+        attachments,
+        attachmentPayload: item.attachmentPayload,
+        attachmentStorageError: undefined,
+      };
       if (purpose === "send" && item.attachmentPayload.tabId !== tabId) {
         const copy = await writeOutboxPayload(owner, result.value);
         if (copy.status === "failed") {
@@ -146,17 +139,15 @@ async function preparePayload(
         // owns its copied bytes, but needs explicit review before retrying.
         return {
           status: "ready",
-          item: {
-            ...item,
-            attachments,
+          update: {
+            ...update,
             attachmentPayload: copy.value,
             sendState: "unconfirmed",
             sendError: t("chat.sendErrors.outboxPayloadCopied"),
-            attachmentStorageError: undefined,
           },
         };
       }
-      return { status: "ready", item: { ...item, attachments, attachmentStorageError: undefined } };
+      return { status: "ready", update };
     } catch {
       return { status: "failed", reason: "missing" };
     }
@@ -179,12 +170,13 @@ async function preparePayload(
   }
   return {
     status: "ready",
-    item: { ...item, attachmentPayload: result.value, attachmentStorageError: undefined },
+    update: { attachmentPayload: result.value, attachmentStorageError: undefined },
   };
 }
 
 // Preview and drain share reads/copies so a cloned tab cannot create competing refs.
 // Check admission per caller; only equivalent bundle identities and metadata may join.
+// Share attachment updates, never the first caller's delivery state or captured destination.
 const pendingPayloads = new Map<string, Promise<PayloadResult>>();
 export async function prepareOutboxPayload(
   host: Host,
@@ -215,23 +207,10 @@ export async function prepareOutboxPayload(
   if (!isCurrent()) {
     return { status: "failed", reason: "unavailable" };
   }
-  if (result.status === "failed") {
-    return result;
-  }
-  const copied = result.item.attachmentPayload?.key !== reference.key;
-  return {
-    status: "ready",
-    item: {
-      ...item,
-      attachments: result.item.attachments,
-      attachmentPayload: result.item.attachmentPayload,
-      attachmentStorageError: undefined,
-      ...(copied ? { sendState: result.item.sendState, sendError: result.item.sendError } : {}),
-    },
-  };
+  return result;
 }
 
-export function retireOutboxPayload(item: ChatQueueItem): void {
+export function retireOutboxPayload(item: Pick<ChatQueueItem, "attachmentPayload">): void {
   if (item.attachmentPayload) {
     void removeOutboxPayloads([item.attachmentPayload]);
   }

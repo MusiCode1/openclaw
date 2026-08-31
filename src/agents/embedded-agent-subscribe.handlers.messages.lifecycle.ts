@@ -21,14 +21,13 @@ import {
 } from "./embedded-agent-subscribe.handlers.messages.replies.js";
 import {
   buildAssistantStreamData,
+  emitAssistantCommentaryStreamData,
   emitAssistantMessageStart,
   emitReasoningEnd,
   extractStandaloneMessageToolText,
   hasMessageToolOnlySourceDelivery,
   isOpenAiCompletionsAssistantMessage,
-  isResponsesApiAssistantMessage,
   isSubscribeTranscriptOnlyOpenClawAssistantMessage,
-  scopeAssistantMessageToStreamBlock,
   shouldSuppressDeterministicApprovalOutput,
 } from "./embedded-agent-subscribe.handlers.messages.stream.js";
 import type { EmbeddedAgentSubscribeContext } from "./embedded-agent-subscribe.handlers.types.js";
@@ -36,7 +35,6 @@ import { appendRawStream } from "./embedded-agent-subscribe.raw-stream.js";
 import { warnIfAssistantEmittedSuspiciousText } from "./embedded-agent-subscribe.tool-text-diagnostics.js";
 import {
   createThinkingTagStreamState,
-  extractAssistantCommentaryText,
   extractAssistantThinking,
   extractAssistantVisibleText,
   extractEmbeddedAssistantText,
@@ -45,6 +43,7 @@ import {
 } from "./embedded-agent-utils.js";
 import type { AgentEvent, AgentMessage } from "./runtime/index.js";
 import {
+  hasBillableUsage,
   hasNonzeroUsage,
   makeZeroUsageSnapshot,
   normalizeUsage,
@@ -58,12 +57,22 @@ export function preservePendingAssistantUsage(
 ): AssistantMessage {
   if (
     isSubscribeTranscriptOnlyOpenClawAssistantMessage(message) ||
-    !hasNonzeroUsage(pendingUsage)
+    !hasBillableUsage(pendingUsage)
   ) {
     return message;
   }
   const messageUsage = normalizeUsage((message as { usage?: UsageLike }).usage);
   if (hasNonzeroUsage(messageUsage)) {
+    if (
+      pendingUsage.cost?.totalOrigin === "provider-billed" &&
+      messageUsage.cost?.totalOrigin !== "provider-billed"
+    ) {
+      message.usage.cost = {
+        ...makeZeroUsageSnapshot().cost,
+        ...message.usage.cost,
+        ...pendingUsage.cost,
+      };
+    }
     return message;
   }
 
@@ -79,12 +88,16 @@ export function preservePendingAssistantUsage(
     output,
     cacheRead,
     cacheWrite,
+    ...(pendingUsage.cacheWrite1h !== undefined ? { cacheWrite1h: pendingUsage.cacheWrite1h } : {}),
     ...(pendingUsage.contextUsage ? { contextUsage: { ...pendingUsage.contextUsage } } : {}),
     totalTokens: pendingUsage.total ?? input + output + cacheRead + cacheWrite,
     ...(pendingUsage.reasoningTokens !== undefined
       ? { reasoningTokens: pendingUsage.reasoningTokens }
       : {}),
   };
+  if (pendingUsage.cost) {
+    Object.assign(message.usage.cost, pendingUsage.cost);
+  }
   return message;
 }
 
@@ -159,18 +172,8 @@ export function handleMessageEnd(
   }
   ctx.noteLastAssistant(assistantMessage);
   ctx.noteCompletedAssistant(assistantMessage);
-  ctx.recordAssistantUsage((assistantMessage as { usage?: unknown }).usage);
   ctx.commitAssistantUsage();
   if (suppressVisibleAssistantOutput) {
-    const isResponsesCommentary = isResponsesApiAssistantMessage(assistantMessage);
-    const commentaryMessage = isResponsesCommentary
-      ? scopeAssistantMessageToStreamBlock(
-          assistantMessage as AssistantMessage,
-          ctx.state.lastAssistantStreamContentIndex,
-          ctx.state.lastAssistantStreamItemId,
-        )
-      : assistantMessage;
-    const commentaryText = coerceChatContentText(extractAssistantCommentaryText(commentaryMessage));
     appendRawStream(() => ({
       ts: Date.now(),
       event: "assistant_message_end",
@@ -179,20 +182,7 @@ export function handleMessageEnd(
       rawText: coerceChatContentText(extractEmbeddedAssistantText(assistantMessage)),
       rawThinking: extractAssistantThinking(assistantMessage),
     }));
-    const commentaryAlreadyStreamed =
-      isResponsesCommentary &&
-      Boolean(ctx.state.deltaBuffer) &&
-      ctx.state.deltaBuffer === commentaryText;
-    if (commentaryText && !commentaryAlreadyStreamed) {
-      ctx.emitAssistantStreamData(
-        buildAssistantStreamData({
-          text: commentaryText,
-          replace: true,
-          phase: "commentary",
-          itemId: isResponsesCommentary ? ctx.state.lastAssistantStreamItemId : undefined,
-        }),
-      );
-    }
+    emitAssistantCommentaryStreamData(ctx, assistantMessage);
     // Commentary-tagged tool turns can still carry durable reasoning under /reasoning on.
     const suppressedTrimmedReasoning = ctx.state.includeReasoning
       ? extractAssistantThinking(assistantMessage).trim()
