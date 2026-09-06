@@ -63,7 +63,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
   const preserveProgressCallbackStartOrder = turn.opts?.preserveProgressCallbackStartOrder === true;
   const runLane = turn.isHeartbeat ? CommandLane.CronNested : CommandLane.Main;
   let queuedUserMessagePersistedAcrossFallback = false;
-  let assistantErrorPersistedAcrossFallback = false;
   const messageToolDeliveryState: MessageToolDeliveryState = {
     toolCallIds: new Set(),
     completed: false,
@@ -275,6 +274,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           userTurnTranscriptRecorder,
           contextEngineLogicalTurnLease: runOptions.contextEngineLogicalTurnLease,
           onContextEngineTurnCandidate: runOptions.onContextEngineTurnCandidate,
+          assistantErrorTranscript: runOptions.assistantErrorTranscript,
           notifyUserMessagePersisted: () => {
             queuedUserMessagePersistedAcrossFallback = true;
           },
@@ -294,7 +294,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           deferredLifecycle: params.state.deferredLifecycle,
         } satisfies AgentFallbackCandidateCommonParams;
         if (runtime.useCliExecution) {
-          params.state.deferredLifecycle.handoffToCli();
           const candidate = await runCliFallbackCandidate({
             ...common,
             cliExecutionProvider: runtime.cliExecutionProvider,
@@ -322,10 +321,6 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             params.state.lifecycleGeneration = generation;
           },
           allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,
-          suppressAssistantErrorPersistenceForCandidate: assistantErrorPersistedAcrossFallback,
-          onAssistantErrorMessagePersisted: () => {
-            assistantErrorPersistedAcrossFallback = true;
-          },
           notifyUserAboutCompaction: params.notifyUserAboutCompaction,
           messageToolDeliveryState,
           onCompactionFacts: ({ accounting, postCompactionModelAttempted }) => {

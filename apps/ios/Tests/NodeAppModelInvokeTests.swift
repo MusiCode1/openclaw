@@ -6434,7 +6434,9 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                     })
             }
             await fixture.coordinator.resume(gatewayStableID: nil)
-            try #require(await waitForMainActorWork { oldTransfer.commandIDs == [command.commandId] })
+            // Await transport entry without repeatedly rescheduling the main actor.
+            try #require(try await oldTransfer.waitForFirstSend() == command.commandId)
+            try #require(oldTransfer.commandIDs == [command.commandId])
             if suspension == "activation" {
                 try #require(activation.beginActivation())
                 activation.complete(activated: true, errorDescription: nil)
@@ -6446,7 +6448,8 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
             // The new wake must survive the occupied task; no further event rescues it after release.
             await fixture.coordinator.resume(gatewayStableID: nil)
             oldTransfer.release()
-            try #require(await waitForMainActorWork { successfulTransfers.commandIDs == [command.commandId] })
+            try #require(try await successfulTransfers.waitForFirstSend() == command.commandId)
+            try #require(successfulTransfers.commandIDs == [command.commandId])
             #expect(fixture.messaging.sentChatReceipts == [receipt, receipt])
             #expect(try await fixture.journal.pendingReceipts().first?.receipt == receipt)
             let terminal = try #require(receipt.terminal)
@@ -6656,6 +6659,17 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
     func `Watch route lease cannot send an expired command as its replacement`() async throws {
         try await withWatchDeliveryFixture { fixture in
             let leaseGate = WatchMessageSendGate()
+            let receipts = AsyncStream<OpenClawWatchChatDeliveryReceipt>
+                .makeStream(bufferingPolicy: .bufferingNewest(8))
+            let sendResult = fixture.messaging.nextSendResult
+            fixture.messaging.sendChatDeliveryReceiptHandler = { receipt in
+                receipts.continuation.yield(receipt)
+                return sendResult
+            }
+            defer {
+                fixture.messaging.sendChatDeliveryReceiptHandler = nil
+                receipts.continuation.finish()
+            }
             var sentCommandIDs: [String] = []
             var sentTexts: [String] = []
             let recordSend: @MainActor @Sendable (String, String) -> Void = { commandID, text in
@@ -6723,8 +6737,8 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                     submittedAtMs: now,
                     body: .quickReply(promptId: "new-prompt", actionId: "new-action", actionLabel: nil, note: nil))
                 try await fixture.coordinator.admit(original)
-                let leaseHeld = await waitForMainActorWork { leaseGate.commandIDs.count == 1 }
-                try #require(leaseHeld)
+                _ = try #require(try await leaseGate.waitForFirstSend())
+                #expect(leaseGate.commandIDs.count == 1)
                 // Advance the journal's existing maintenance clock, not the Gateway or a test-only scheduler.
                 #expect(try await fixture.journal.pruneExpired(nowMs: original.expiresAtMs) == 1)
                 let admitted = try await fixture.coordinator.admit(replacement)
@@ -6733,10 +6747,16 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
                 #expect(admitted.acceptedRunID == nil)
                 #expect(sentTexts.isEmpty)
                 leaseGate.release()
-                let completed = await waitForMainActorWork {
-                    fixture.messaging.sentChatReceipts.contains {
-                        $0.commandId == replacement.commandId && $0.terminal?.outcome == .forwarded
+                let completed = try await AsyncTimeout.withTimeout(
+                    seconds: 2,
+                    onTimeout: { URLError(.timedOut) })
+                {
+                    for await receipt in receipts.stream
+                        where receipt.commandId == replacement.commandId && receipt.terminal?.outcome == .forwarded
+                    {
+                        return true
                     }
+                    return false
                 }
                 #expect(completed)
                 await stopCoordinator()
@@ -6759,6 +6779,17 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
         retiredDuringRemoval: Bool) async throws
     {
         try await withWatchDeliveryFixture { fixture in
+            let receipts = AsyncStream<OpenClawWatchChatDeliveryReceipt>
+                .makeStream(bufferingPolicy: .bufferingNewest(8))
+            let sendResult = fixture.messaging.nextSendResult
+            fixture.messaging.sendChatDeliveryReceiptHandler = { receipt in
+                receipts.continuation.yield(receipt)
+                return sendResult
+            }
+            defer {
+                fixture.messaging.sendChatDeliveryReceiptHandler = nil
+                receipts.continuation.finish()
+            }
             let command = fixture.command()
             let owner = OpenClawWatchMessageOwner(context: command.context)
             _ = try await fixture.journal.admit(command, nowMs: WatchMessagingPayloadCodec.nowMs())
@@ -6829,7 +6860,8 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
             try await connect(socket(holdingHistory: true))
             let previousRoute = try #require(await fixture.gateway.currentRoute())
             await fixture.coordinator.resume(gatewayStableID: owner.gatewayStableID)
-            try #require(await waitForMainActorWork { historyGate.commandIDs == [command.commandId] })
+            try #require(try await historyGate.waitForFirstSend() == command.commandId)
+            #expect(historyGate.commandIDs == [command.commandId])
             await fixture.gateway.disconnect()
             if retiredDuringRemoval {
                 try fixture.databases.stageGatewayRemoval(gatewayID: owner.gatewayStableID)
@@ -6841,12 +6873,19 @@ private final class TimingOutDeviceStatusService: DeviceStatusServicing {
             // Reconnect requests recovery while the previous socket callback is still held.
             await fixture.coordinator.resume(gatewayStableID: owner.gatewayStableID)
             historyGate.release()
-            #expect(await waitForMainActorWork {
-                fixture.messaging.sentChatReceipts.contains {
-                    $0.commandId == command.commandId && $0.terminal?
-                        .outcome == .reply(text: "Recovered after reconnect")
+            let recovered = try await AsyncTimeout.withTimeout(
+                seconds: 2,
+                onTimeout: { URLError(.timedOut) })
+            {
+                for await receipt in receipts.stream
+                    where receipt.commandId == command.commandId && receipt.terminal?
+                    .outcome == .reply(text: "Recovered after reconnect")
+                {
+                    return true
                 }
-            })
+                return false
+            }
+            #expect(recovered)
             #expect(!requests.commandIDs.contains("chat.send"))
             let stored = try #require(try await fixture.journal.entries(owner: owner).first)
             #expect(stored.receipt?.terminal?.outcome == .reply(text: "Recovered after reconnect"))
