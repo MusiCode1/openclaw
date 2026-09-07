@@ -197,6 +197,16 @@ describe("native app i18n inventory", () => {
     );
   });
 
+  it("inventories SwiftUI Tab titles as UI calls", () => {
+    const sources = extractNativeI18nCandidates(
+      "apple",
+      "apps/macos/Fixture.swift",
+      `Tab("Connection", systemImage: "network", value: FixtureTab.connection) { EmptyView() }`,
+    ).map((entry) => entry.source);
+
+    expect(sources).toEqual(["Connection"]);
+  });
+
   it("joins adjacent literals across supported Swift and Kotlin UI expressions", () => {
     const swift = extractNativeI18nCandidates(
       "apple",
@@ -745,8 +755,14 @@ describe("native app i18n inventory", () => {
     expect(
       entries.some(
         (entry) =>
+          hasSite(
+            entry,
+            (site) =>
+              site.path === "apps/macos/Sources/OpenClaw/OnboardingAISetupView.swift" &&
+              site.kind === "ui-localized-call-multiline",
+          ) &&
           entry.source ===
-          "The details are listed on each option above. You can fix the login and retry, or connect with an API key or token below.",
+            "Include existing %@ conversations in the sidebar. This discovers them in place; it does not copy transcripts.",
       ),
     ).toBe(true);
     expect(
