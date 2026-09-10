@@ -4,10 +4,15 @@ import {
   normalizeOptionalString as nonEmptyString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import * as doctorRuntime from "./crabbox-worker-doctor-runtime.js";
-import { CRABBOX_WORKER_PROVIDER_ID, findCrabboxBinary } from "./crabbox-worker-profile.js";
+import {
+  CRABBOX_OS_LABELS,
+  CRABBOX_WORKER_PROVIDER_ID,
+  findCrabboxBinary,
+} from "./crabbox-worker-profile.js";
 import {
   crabboxWarmImageRecoveryHint,
-  isCrabboxWarmImageCapturePaused,
+  CRABBOX_WARM_IMAGE_WAIT_HINT,
+  isCrabboxWarmImageCaptureUncertain,
   listCrabboxWarmImages,
 } from "./crabbox-worker-warm-image-store.js";
 
@@ -65,8 +70,11 @@ function createCrabboxCloudWorkerProfileCheck(openclawRoot: string): HealthCheck
       const findings: HealthFinding[] = [];
       for (const [profileId, profile] of profiles) {
         const settings = readRecord(profile.settings);
-        const wsl2 = nonEmptyString(settings?.target) === "windows/wsl2";
-        const minimumVersion = wsl2 ? doctorRuntime.CRABBOX_WSL2_MIN_VERSION : "0.41.1";
+        const target = nonEmptyString(settings?.target);
+        const nonLinux =
+          target === "windows/wsl2" || target === "windows/normal" || target === "macos";
+        const targetLabel = nonLinux ? CRABBOX_OS_LABELS[target] : undefined;
+        const minimumVersion = nonLinux ? doctorRuntime.CRABBOX_NON_LINUX_MIN_VERSION : "0.41.1";
         const explicitBinary = nonEmptyString(settings?.binary);
         const binary = findCrabboxBinary({
           ...(explicitBinary ? { explicit: explicitBinary } : {}),
@@ -96,14 +104,14 @@ function createCrabboxCloudWorkerProfileCheck(openclawRoot: string): HealthCheck
         if (
           result.status !== "indeterminate" &&
           (result.status === "outdated" ||
-            (wsl2 && !doctorRuntime.supportsCrabboxWsl2(result.version)))
+            (nonLinux && !doctorRuntime.supportsCrabboxNonLinuxTargets(result.version)))
         ) {
           findings.push(
             finding({
               profileId,
               minimumVersion,
               binary,
-              message: `uses Crabbox ${result.version}, but ${wsl2 ? "Windows (WSL2) " : ""}cloud workers require Crabbox ${minimumVersion} or newer.`,
+              message: `uses Crabbox ${result.version}, but ${targetLabel ? `${targetLabel} ` : ""}cloud workers require Crabbox ${minimumVersion} or newer.`,
               fixHint: repairHint(profileId, explicitBinary, minimumVersion),
             }),
           );
@@ -113,9 +121,9 @@ function createCrabboxCloudWorkerProfileCheck(openclawRoot: string): HealthCheck
               profileId,
               minimumVersion,
               binary,
-              severity: wsl2 ? "warning" : "info",
+              severity: nonLinux ? "warning" : "info",
               message: `has an executable Crabbox binary, but Doctor could not determine its version: ${result.reason}.`,
-              fixHint: `Run \`${binary} --version\` and confirm it reports Crabbox ${minimumVersion} or newer${wsl2 ? " for Windows (WSL2) cloud workers" : ""}, then rerun \`openclaw doctor --json --severity-min info\`.`,
+              fixHint: `Run \`${binary} --version\` and confirm it reports Crabbox ${minimumVersion} or newer${targetLabel ? ` for ${targetLabel} cloud workers` : ""}, then rerun \`openclaw doctor --json --severity-min info\`.`,
             }),
           );
         }
@@ -141,6 +149,14 @@ export function registerCrabboxWorkerProviderDoctorChecks(
       async detect(ctx) {
         const findings: HealthFinding[] = [];
         for (const image of listCrabboxWarmImages(ctx.env)) {
+          const facts = [
+            image.profileId,
+            image.backend,
+            image.machineClass,
+            image.os,
+            image.projectLabel,
+          ].filter(Boolean);
+          const display = facts.length ? ` (${facts.join(" · ")})` : "";
           const details = {
             checkId: CRABBOX_WARM_IMAGES_CHECK_ID,
             severity: "warning",
@@ -148,22 +164,24 @@ export function registerCrabboxWorkerProviderDoctorChecks(
             target: image.profileKey,
           } as const;
           if (image.capture) {
-            const paused = isCrabboxWarmImageCapturePaused(image.capture);
+            const uncertain = isCrabboxWarmImageCaptureUncertain(image.capture);
             findings.push({
               ...details,
-              severity: paused ? "warning" : "info",
-              message: paused
-                ? `Warm-image capture ${image.capture.selector} is paused; its provider outcome requires manual reconciliation.`
-                : `Warm-image capture ${image.capture.selector} is in progress.`,
-              fixHint: paused
+              severity: uncertain || image.capture.stale ? "warning" : "info",
+              message: uncertain
+                ? `Warm-image capture ${image.capture.selector}${display} is paused; its provider outcome requires manual reconciliation.`
+                : image.capture.stale
+                  ? `Warm-image capture ${image.capture.selector}${display} is taking longer than usual.`
+                  : `Warm-image capture ${image.capture.selector}${display} is in progress.`,
+              fixHint: uncertain
                 ? crabboxWarmImageRecoveryHint(image.capture.selector)
-                : "Allow the current capture to finish; inspect `openclaw crabbox warm-images --json` if it remains pending.",
+                : CRABBOX_WARM_IMAGE_WAIT_HINT,
             });
           }
           if (image.retirement) {
             findings.push({
               ...details,
-              message: `Warm-image checkpoint ${image.retirement.checkpointId} is still awaiting deletion.`,
+              message: `Warm-image checkpoint ${image.retirement.checkpointId}${display} is still awaiting deletion.`,
               fixHint:
                 "Cleanup retries during the next warm-image capture or worker teardown. Inspect `openclaw crabbox warm-images --json` and resolve provider deletion errors if it remains pending.",
             });
