@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { commandError, requireGit, runGit } from "../../agents/worktrees/git.js";
+import { commandError, gitEnvironment, requireGit, runGit } from "../../agents/worktrees/git.js";
 import { normalizeCloudRepo } from "../../config/cloud-worker-project-profiles.js";
+import { executeGitCommand, requireGitCommandOutput } from "../../infra/git-exec.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
+import type { RepositoryWorkerProjectSnapshot } from "./repository-project-source.js";
 import { workerSshCommandOptions } from "./ssh.js";
 import {
   MAX_WORKSPACE_INVENTORY_PATH_BYTES,
@@ -14,12 +16,14 @@ import { runWorkspaceInventoryCommandToFile } from "./workspace-sync-inventory.j
 const GIT_TIMEOUT_MS = 10 * 60_000;
 const COMMIT_PATTERN = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u;
 
-export type WorkerProjectSnapshot = {
+export type { RepositoryWorkerProjectSnapshot } from "./repository-project-source.js";
+export type WorkerLocalProjectSnapshot = {
   key: string;
   root: string;
   baseCommit: string;
   label?: string;
 };
+export type WorkerProjectSnapshot = WorkerLocalProjectSnapshot | RepositoryWorkerProjectSnapshot;
 
 export function workerProjectSeedKey(project: Pick<WorkerProjectSnapshot, "key" | "baseCommit">) {
   return createHash("sha256").update(`${project.key}\0${project.baseCommit}`).digest("hex");
@@ -30,7 +34,7 @@ export async function prepareWorkerProjectSnapshot(params: {
   namespace: string;
   baseCommit?: string;
   signal?: AbortSignal;
-}): Promise<WorkerProjectSnapshot | undefined> {
+}): Promise<WorkerLocalProjectSnapshot | undefined> {
   params.signal?.throwIfAborted();
   const root = await fsp.realpath(params.localPath);
   const gitAdmin = await fsp.lstat(path.join(root, ".git")).catch((error: unknown) => {
@@ -95,6 +99,7 @@ export async function prepareWorkerWorkspaceGitPack(params: {
   retainedCommit?: string;
   temporaryRoot: string;
   signal: AbortSignal;
+  baseEnv?: NodeJS.ProcessEnv;
 }): Promise<string> {
   const { root, baseCommit, signal } = params;
   if (!COMMIT_PATTERN.test(baseCommit)) {
@@ -112,16 +117,16 @@ export async function prepareWorkerWorkspaceGitPack(params: {
   try {
     let retainedCommit = params.retainedCommit;
     if (retainedCommit) {
-      const donor = await requireGit(
-        root,
-        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
-        {
+      const donor = requireGitCommandOutput(
+        "git cat-file",
+        await executeGitCommand(root, ["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
           input: `${retainedCommit}\n`,
-          env: { GIT_NO_LAZY_FETCH: "1" },
+          baseEnv: params.baseEnv,
+          env: gitEnvironment({ GIT_NO_LAZY_FETCH: "1" }),
           signal,
           timeoutMs: GIT_TIMEOUT_MS,
-        },
-      );
+        }),
+      ).trim();
       // An image can outlive rewritten Gateway history. Missing local donor data
       // uses the existing full snapshot path; corrupt or invalid objects still fail.
       if (donor === `${retainedCommit} missing`) {
@@ -149,6 +154,7 @@ export async function prepareWorkerWorkspaceGitPack(params: {
           `${baseCommit}^{tree}`,
         ],
         outputPath: objectListPath,
+        baseEnv: params.baseEnv,
         signal,
         timeoutMs: GIT_TIMEOUT_MS,
         maxOutputBytes: MAX_WORKSPACE_INVENTORY_PATH_BYTES,
@@ -165,6 +171,7 @@ export async function prepareWorkerWorkspaceGitPack(params: {
         ...(retainedCommit ? ["--revs", "--thin", "--shallow", "--delta-base-offset"] : []),
       ],
       inputPath: objectListPath,
+      baseEnv: params.baseEnv,
       outputPath: packPath,
       signal,
       timeoutMs: GIT_TIMEOUT_MS,

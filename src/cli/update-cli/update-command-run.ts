@@ -11,6 +11,7 @@ import {
   formatExternalSupervisorUpdateRequired,
   isGatewayExternallySupervised,
 } from "../../infra/gateway-supervision.js";
+import { assertNoPendingPackageActivation } from "../../infra/package-update-activation.js";
 import { normalizeUpdateChannel } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
 import {
@@ -22,7 +23,10 @@ import {
   type DevUpdateTarget,
   UPDATE_DEV_TARGET_REF_ENV,
 } from "../../infra/update-dev-target.js";
-import { updateInstallRootsMatch } from "../../infra/update-install-root.js";
+import {
+  resolveUpdateInstallRoot,
+  updateInstallRootsMatch,
+} from "../../infra/update-install-root.js";
 import {
   POST_CORE_UPDATE_CHANNEL_ENV,
   POST_CORE_UPDATE_ENV,
@@ -43,13 +47,10 @@ import {
   recordUpdateRunPhase,
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
-import {
-  summarizeUpdateStepFailure,
-  type UpdateRunRecord,
-  type UpdateRunStep,
-} from "../../infra/update-run-record.js";
+import type { UpdateRunRecord, UpdateRunStep } from "../../infra/update-run-record.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { inspectUpdateRecoveries, loadUpdateRecovery } from "../../infra/update-run-recovery.js";
+import { updateRunStepsFromResultStep } from "../../infra/update-run-step.js";
 import type { UpdateRunResult, UpdateStepProgress } from "../../infra/update-runner.js";
 import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -57,12 +58,14 @@ import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-stat
 import { VERSION } from "../../version.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "../signal-exit-barrier.js";
+import type { UpdateDisplayProgress } from "./progress.js";
 import { parseUpdateTimeoutMs, resolveUpdateRoot, type UpdateCommandOptions } from "./shared.js";
 import { suppressDeprecations } from "./suppress-deprecations.js";
 import {
   admitMutableUpdateSignalRun,
   withMutableUpdateSignals,
 } from "./update-command-mutable-signals.js";
+import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
 import {
   resolveOwnedManagedUpdateEnv,
   resolveServiceRefreshEnv,
@@ -128,11 +131,35 @@ async function resolveUpdateCommandAdmissionEnv(params: {
   return env;
 }
 
+/** Package admission must not open history or launch diagnostics on a retained operation. */
+export function assertUpdatePackageActivationAdmission(
+  root: string,
+  options?: Parameters<typeof assertNoPendingPackageActivation>[1],
+): void {
+  try {
+    assertNoPendingPackageActivation(resolveUpdateInstallRoot(root), options);
+  } catch (cause) {
+    throw new UpdateCommandPendingRecoveryFailure(
+      {
+        status: "error",
+        mode: "unknown",
+        root,
+        reason: "update-recovery-pending",
+        steps: [],
+        durationMs: 0,
+      },
+      formatErrorMessage(cause),
+      { cause },
+    );
+  }
+}
+
 export async function admitUpdateCommandRun(params: {
   opts: UpdateCommandOptions;
   root: string;
   invocationCwd?: string;
 }): Promise<NonNullable<UpdateCommandOptions["run"]>> {
+  assertUpdatePackageActivationAdmission(params.root);
   const env = await resolveUpdateCommandAdmissionEnv(params);
   // A previous invocation may have died with a sealed restoration plan. Detect
   // it before any writable owner open or history row creation changes that state.
@@ -253,7 +280,7 @@ export function failUpdateCommandRun(
 
 export function createUpdateRunProgress(
   run: NonNullable<UpdateCommandOptions["run"]>,
-  progress: UpdateStepProgress,
+  progress: UpdateDisplayProgress,
 ): UpdateStepProgress & {
   deferLedgerWrites: () => void;
   flushLedgerWrites: () => void;
@@ -265,9 +292,9 @@ export function createUpdateRunProgress(
   const record = (step: UpdateRunStep) => {
     if (deferred) {
       pendingSteps.push(step);
-    } else {
-      recordUpdateRunStep(run.runId, step, { env: run.env });
+      return undefined;
     }
+    return recordUpdateRunStep(run.runId, step, { env: run.env });
   };
   return {
     pendingSteps,
@@ -288,21 +315,21 @@ export function createUpdateRunProgress(
       }
     },
     onStepStart(step) {
-      record({ step: step.name, status: "in_progress", startedAtMs: Date.now() });
-      progress.onStepStart?.(step);
+      const committed = record({ step: step.name, status: "in_progress", startedAtMs: Date.now() });
+      progress.onStepStart?.(step, committed);
     },
     onStepComplete(step) {
       const endedAtMs = Date.now();
-      record({
-        step: step.name,
-        status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
-        startedAtMs: Math.max(0, endedAtMs - step.durationMs),
-        endedAtMs,
-        ...(step.exitCode !== 0
-          ? { detail: step.advisory?.message ?? summarizeUpdateStepFailure(step) }
-          : {}),
-      });
-      progress.onStepComplete?.(step);
+      // A completed step may persist warnings; display its final committed row.
+      let committed: UpdateRunRecord | undefined;
+      for (const entry of updateRunStepsFromResultStep(step)) {
+        committed = record({
+          ...entry,
+          startedAtMs: Math.max(0, endedAtMs - step.durationMs),
+          endedAtMs,
+        });
+      }
+      progress.onStepComplete?.(step, committed);
     },
   };
 }
@@ -361,18 +388,8 @@ export function completeUpdateCommandRun(
       recordOptions,
     );
   }
-  for (const step of result.steps) {
-    recordUpdateRunStep(
-      run.runId,
-      {
-        step: step.name,
-        status: step.exitCode === 0 || step.advisory ? "completed" : "failed",
-        ...(step.exitCode !== 0
-          ? { detail: step.advisory?.message ?? summarizeUpdateStepFailure(step) }
-          : {}),
-      },
-      recordOptions,
-    );
+  for (const step of result.steps.flatMap(updateRunStepsFromResultStep)) {
+    recordUpdateRunStep(run.runId, step, recordOptions);
   }
   // Both finalization and outer CLI unwind come here. A verified restored generation
   // stays with its helper until native recovery finishes; neither caller may close it early.
@@ -453,6 +470,23 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
   if (!postCoreUpdateResume && opts.dryRun !== true && isGatewayExternallySupervised()) {
     throw new Error(formatExternalSupervisorUpdateRequired());
   }
+  const discoveredRoot = await resolveUpdateRoot();
+  const installKind = await resolveUpdateInstallKind(discoveredRoot);
+  // A post-core marker cannot bypass pending recovery without the live original
+  // owner. Check both roots before config/autostart preparation or history.
+  assertUpdatePackageActivationAdmission(discoveredRoot, {
+    continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
+  });
+  const servicePlan =
+    installKind === "package"
+      ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot })
+      : undefined;
+  if (servicePlan?.rootRedirect) {
+    assertUpdatePackageActivationAdmission(servicePlan.rootRedirect.root, {
+      continuation: postCoreUpdateResume ? opts.run?.executorFence : undefined,
+    });
+  }
+  opts.run?.executorFence?.assertCurrent();
   if (opts.dryRun !== true) {
     await assertOpenClawStateWriteAllowedAtPath({
       databasePath: resolveOpenClawStateSqlitePath(process.env),
@@ -460,18 +494,13 @@ export async function prepareUpdateCommand(opts: UpdateCommandOptions) {
     });
   }
   const controlPlaneUpdateSentinelMeta = await readControlPlaneUpdateSentinelMeta();
-  const discoveredRoot = await resolveUpdateRoot();
+  opts.run?.executorFence?.assertCurrent();
   const handoffRoot = controlPlaneUpdateSentinelMeta?.root;
   if (handoffRoot && !updateInstallRootsMatch(handoffRoot, discoveredRoot)) {
     throw new Error(
       `Managed update handoff root mismatch: expected ${handoffRoot}, running from ${discoveredRoot}.`,
     );
   }
-  const installKind = await resolveUpdateInstallKind(discoveredRoot);
-  const servicePlan =
-    installKind === "package"
-      ? await resolveManagedServicePackageUpdatePlan({ root: discoveredRoot })
-      : undefined;
   if (opts.dryRun !== true) {
     try {
       assertConfigWriteAllowedInCurrentMode();
