@@ -17,7 +17,7 @@ import {
   toDatabaseOptions,
   type SessionSqliteTargetResolutionCache,
 } from "./session-accessor.sqlite-scope.js";
-import type { SessionEntryReadScope } from "./session-accessor.types.js";
+import type { SessionEntryReadScope, SessionEntryReadSource } from "./session-accessor.types.js";
 import {
   assertCanonicalSqliteSessionKeysCurrent,
   readWithCanonicalSessionAdmission,
@@ -33,7 +33,11 @@ type ResolvedSqliteSessionEntry = {
 /** Resolves one exact canonical entry without materializing the store. */
 export function resolveSessionEntry(
   scope: SessionAccessScope,
-  options: { readOnly?: boolean; databaseAgentId?: string } = {},
+  options: {
+    readOnly?: boolean;
+    databaseAgentId?: string;
+    projection?: SessionEntryReadScope["projection"];
+  } = {},
 ): ResolvedSqliteSessionEntry {
   const resolved = resolveSqliteScope(scope);
   if (options.databaseAgentId) {
@@ -42,7 +46,11 @@ export function resolveSessionEntry(
   const read = (
     database: Pick<OpenClawAgentDatabase, "agentId" | "db" | "path">,
   ): ResolvedSqliteSessionEntry => {
-    const selected = readSessionEntryRow(database, resolved.sessionKey);
+    const selected = readSessionEntryRow(
+      database,
+      resolved.sessionKey,
+      options.readOnly ? options.projection : "full",
+    );
     return {
       existing: selected?.entry,
       legacyKeys: [],
@@ -60,9 +68,6 @@ export function resolveSessionEntry(
   }
   return read(openOpenClawAgentDatabase(toDatabaseOptions(resolved)));
 }
-
-/** Address of the physical store admitted by an entry read; never retains its handle. */
-export type SessionEntryReadSource = Readonly<{ agentId: string; path: string }>;
 
 type PhysicalSessionEntryReadScope = {
   readSource: SessionEntryReadSource;
@@ -133,7 +138,7 @@ export type ExactSessionEntryBatchScope = Omit<SessionEntryReadScope, "sessionKe
   onReadSource?: (source: SessionEntryReadSource) => void;
 };
 
-export function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBatchScope[]) {
+function groupExactSessionEntryReadRequests(scopes: readonly ExactSessionEntryBatchScope[]) {
   const results: Array<Result<ExactSessionEntry[], unknown>> = scopes.map(() => ok([]));
   const targetCache: SessionSqliteTargetResolutionCache = new Map();
   const groups = new Map<
