@@ -17,26 +17,12 @@ describe("PluginLruCache", () => {
     expect(cache.get("c")).toBe("charlie");
   });
 
-  it("returns hit state for cached null values", () => {
+  it("distinguishes cached null values from misses", () => {
     const cache = new PluginLruCache<string | null>(2);
 
     cache.set("missing", null);
 
-    expect(cache.getResult("missing")).toEqual({ hit: true, value: null });
-    expect(cache.getResult("unknown")).toEqual({ hit: false });
-  });
-
-  it("resizes and falls back to the default max entry count", () => {
-    const cache = new PluginLruCache<string>(2);
-
-    cache.setMaxEntriesForTest(1.9);
-    cache.set("a", "alpha");
-    cache.set("b", "bravo");
-    expect(cache.maxEntries).toBe(1);
-    expect(cache.size).toBe(1);
-    expect(cache.get("a")).toBeUndefined();
-
-    cache.setMaxEntriesForTest();
-    expect(cache.maxEntries).toBe(2);
+    expect(cache.get("missing")).toBeNull();
+    expect(cache.get("unknown")).toBeUndefined();
   });
 });

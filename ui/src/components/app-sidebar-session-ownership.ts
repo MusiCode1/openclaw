@@ -1,87 +1,137 @@
-import type { PropertyValues } from "lit";
-import { state } from "lit/decorators.js";
-import { AppSidebarSessionProjectionElement } from "./app-sidebar-session-projection.ts";
+import type { SessionParticipantIdentity } from "../../../packages/gateway-protocol/src/schema/session-participant.js";
+import type { SessionsListResult } from "../api/types.ts";
+import { someSidebarSessionInTree } from "./app-sidebar-session-navigation-logic.ts";
 import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
-import {
-  listSessionCreators,
-  type SessionCreatedActor,
-  type SessionCreatorOption,
-} from "./session-owner-chip.ts";
+import { sessionSelfOwner, type SessionOwnerOption } from "./session-owner-chip.ts";
 
-/** Creator attribution, solo dormancy, and filtering shared by sidebar session surfaces. */
-export abstract class AppSidebarSessionOwnershipElement extends AppSidebarSessionProjectionElement {
-  @state() protected sessionCreatorFilterId: string | null = null;
-
-  protected sessionCreatorOptions: readonly SessionCreatorOption[] = [];
-  protected activeSessionCreatorId: string | null = null;
-  protected sessionCreatorFilterActive = false;
-  sessionOwnershipVisible = false;
-
-  override updated(changedProperties: PropertyValues<this>) {
-    super.updated(changedProperties);
-    const selectedId = this.sessionCreatorFilterId;
-    const creators = this.sessionData.sessionsResult?.creators;
-    if (
-      selectedId &&
-      creators &&
-      (creators.length < 2 || !creators.some((creator) => creator.id === selectedId))
-    ) {
-      this.sessionCreatorFilterId = null;
-      void this.context?.sessions.setCreatorFilter(null);
-    }
+function sessionParticipantIdentityKey(identity: SessionParticipantIdentity): string {
+  switch (identity.type) {
+    case "profile":
+    case "agent":
+      return JSON.stringify([identity.type, identity.id]);
+    case "remote":
+      return JSON.stringify([
+        identity.type,
+        identity.pluginId,
+        identity.domain,
+        identity.idKind,
+        identity.id,
+      ]);
+    case "observation":
+      return JSON.stringify([
+        identity.type,
+        identity.pluginId,
+        identity.accountId,
+        identity.senderKind,
+        identity.id,
+      ]);
+    case "legacy":
+      return JSON.stringify([identity.type, identity.actorType, identity.source, identity.id]);
+    default:
+      return identity satisfies never;
   }
+}
 
-  protected applySessionCreatorFilter(
-    projected: readonly SidebarRecentSession[],
-    creatorRows: readonly { createdActor?: SessionCreatedActor }[] = [],
-    creatorFacet?: readonly { id: string; label?: string }[],
-  ): SidebarRecentSession[] {
-    const flattened: SidebarRecentSession[] = [];
-    const pending = [...projected];
-    while (pending.length > 0) {
-      const row = pending.shift();
-      if (row) {
-        flattened.push(row);
-        pending.push(...row.children);
+function hasMultipleSidebarSessionIdentities(
+  ownerOptions: readonly SessionOwnerOption[],
+  rows: readonly SidebarRecentSession[],
+  humansOnly: boolean,
+): boolean {
+  const identities = new Set(
+    ownerOptions
+      .filter((owner) => !humansOnly || owner.type === "human")
+      .map((owner) =>
+        sessionParticipantIdentityKey(
+          owner.identity ?? { type: owner.type === "human" ? "profile" : "agent", id: owner.id },
+        ),
+      ),
+  );
+  if (identities.size >= 2) {
+    return true;
+  }
+  return someSidebarSessionInTree(rows, (row) => {
+    const participants = row.participants ?? [];
+    for (const participant of participants) {
+      const identity = participant.identity;
+      if (
+        humansOnly &&
+        identity.type !== "profile" &&
+        !(identity.type === "observation" && identity.senderKind === "human") &&
+        !(identity.type === "legacy" && identity.actorType === "human")
+      ) {
+        continue;
+      }
+      identities.add(sessionParticipantIdentityKey(identity));
+      if (identities.size >= 2) {
+        return true;
       }
     }
-    const completeFacet = creatorFacet ?? this.sessionData.sessionsResult?.creators;
-    this.sessionCreatorOptions = listSessionCreators([
-      ...(completeFacet ?? []).map((creator) => ({
-        createdActor: { type: "human" as const, ...creator },
-      })),
-      ...flattened,
-      ...creatorRows,
-    ]);
-    this.sessionOwnershipVisible = this.sessionCreatorOptions.length >= 2;
-    const creatorId = this.sessionOwnershipVisible
-      ? this.sessionCreatorOptions.some((creator) => creator.id === this.sessionCreatorFilterId)
-        ? this.sessionCreatorFilterId
-        : null
+    // Unshown participants may all be agents; only known humans enable attribution.
+    return !humansOnly && (row.participantCount ?? participants.length) > participants.length;
+  });
+}
+
+export function applySidebarSessionOwnerFilter(input: {
+  projected: SidebarRecentSession[];
+  ownerFacet: SessionsListResult["owners"];
+  selectedOwnerId: string | null;
+  self?: { id: string; name?: string; avatarUrl?: string } | null;
+}): {
+  rows: SidebarRecentSession[];
+  ownerOptions: readonly SessionOwnerOption[];
+  ownershipVisibility: { filters: boolean; avatars: boolean };
+  activeOwnerId: string | null;
+} {
+  const facetOwners = input.ownerFacet ?? [];
+  const selfId = input.self?.id;
+  const selfOwner =
+    facetOwners.find((owner) => owner.id === selfId)?.type === "agent"
+      ? null
+      : sessionSelfOwner(input.self);
+  const ownerOptions = selfOwner
+    ? [selfOwner, ...facetOwners.filter((owner) => owner.id !== selfOwner.id)]
+    : facetOwners;
+  const ownershipVisibility = {
+    filters: hasMultipleSidebarSessionIdentities(ownerOptions, input.projected, false),
+    avatars: hasMultipleSidebarSessionIdentities(ownerOptions, input.projected, true),
+  };
+  // An absent facet is unresolved during hydration. A present facet is the
+  // Gateway's complete owner inventory, even when rows are owner-filtered.
+  const selectedOwnerId = input.selectedOwnerId?.trim() || null;
+  const activeOwnerId =
+    selectedOwnerId &&
+    (input.ownerFacet === undefined || ownerOptions.some((owner) => owner.id === selectedOwnerId))
+      ? selectedOwnerId
       : null;
-    this.sessionCreatorFilterActive = creatorId !== null;
-    this.activeSessionCreatorId = creatorId;
-    if (!creatorId) {
-      return [...projected];
-    }
-    const filterTree = (treeRows: readonly SidebarRecentSession[]): SidebarRecentSession[] => {
-      const filtered: SidebarRecentSession[] = [];
-      for (const row of treeRows) {
-        const children = filterTree(row.children);
-        if (row.createdActor?.id === creatorId) {
-          filtered.push({ ...row, children });
-        } else {
-          for (const child of children) {
-            filtered.push({ ...child, isChild: false });
-          }
+  if (!activeOwnerId) {
+    // Involving-me is evaluated by the Gateway against the complete participant table.
+    // The bounded display projection cannot safely repeat that predicate client-side.
+    return {
+      rows: input.projected,
+      ownerOptions,
+      ownershipVisibility,
+      activeOwnerId,
+    };
+  }
+  const filterTree = (treeRows: readonly SidebarRecentSession[]): SidebarRecentSession[] => {
+    const filtered: SidebarRecentSession[] = [];
+    for (const row of treeRows) {
+      const children = filterTree(row.children);
+      const ownerId = row.owner?.actor.id;
+      if (ownerId === activeOwnerId) {
+        filtered.push({ ...row, children });
+      } else {
+        for (const child of children) {
+          filtered.push({ ...child, isChild: false });
         }
       }
-      return filtered;
-    };
-    return filterTree(projected);
-  }
-
-  protected hideEmptyCreatorFilteredGroup(category: string | undefined, rowCount: number): boolean {
-    return this.sessionCreatorFilterActive && Boolean(category) && rowCount === 0;
-  }
+    }
+    return filtered;
+  };
+  return {
+    rows: filterTree(input.projected),
+    ownerOptions,
+    ownershipVisibility,
+    activeOwnerId,
+  };
 }
