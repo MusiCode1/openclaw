@@ -1,3 +1,4 @@
+import { channel } from "node:diagnostics_channel";
 import { statSync } from "node:fs";
 import { performance } from "node:perf_hooks";
 import { isDeepStrictEqual } from "node:util";
@@ -6,6 +7,7 @@ import { toStringifiedError } from "@openclaw/normalization-core/error-coercion"
 import { redactIdentifier } from "@openclaw/normalization-core/node-crypto";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { formatErrorMessageWithCode } from "../../infra/errors.js";
+import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
 import { captureStateDatabaseCoordinatorRuntime } from "../../infra/state-database-coordinator.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
@@ -98,12 +100,13 @@ export type SqliteReclamationWorkerMessage =
 
 const log = createSubsystemLogger("session-sqlite");
 const SLOW_RECLAMATION_WORKER_MS = 1_000;
-const RECLAMATION_WORKER_IDLE_MS = 60_000;
 type ReclamationWorkerSlot = { worker?: SqliteReclamationWorker; execution?: CanonicalWorkerPool };
 const retained = resolveGlobalSingleton<ReclamationWorkerSlot>(
   Symbol.for("openclaw.sessionReclamationWorker"),
   () => ({}),
 );
+
+channel("openclaw.memory.critical").subscribe(() => retained.worker?.retireIfIdle());
 
 /** The global archive FIFO bounds ordinary reclamation's whole-buffer heaps. */
 export function withSqliteReclamationWorker<T>(
@@ -273,9 +276,15 @@ class SqliteReclamationWorker {
       this.active = undefined;
       if (!this.revoked) {
         this.transport?.channel.unref();
-        this.idle = setTimeout(this.beforeExit, RECLAMATION_WORKER_IDLE_MS);
+        this.idle = setTimeout(this.beforeExit, SQLITE_IDLE_HANDLE_TTL_MS);
         this.idle.unref();
       }
+    }
+  }
+
+  retireIfIdle(): void {
+    if (this.transport && this.idle && !this.active && !this.revoked) {
+      void this.close().catch((error: unknown) => log.error(String(error)));
     }
   }
 
