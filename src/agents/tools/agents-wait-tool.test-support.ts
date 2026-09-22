@@ -1,30 +1,24 @@
-import type { SubagentRunRecord } from "../subagent-registry.types.js";
-import "./agents-wait-tool.js";
+import type { SubagentRunRecord } from "../subagents/registry/subagent-registry.types.js";
 
-type WaitError = { runId: string; error: "not_found" | "not_owner" };
-type WaitTarget = { runId: string; entry: SubagentRunRecord };
-type AgentsWaitToolTestApi = {
-  testing: {
-    ownsRun(entry: SubagentRunRecord, currentSessionKeys: ReadonlySet<string>): boolean;
-    readResolvedWaitState(targets: readonly WaitTarget[], errors: readonly WaitError[]): unknown;
-    readWaitState(ids: readonly string[], currentSessionKeys: ReadonlySet<string>): unknown;
-    resolveWaitTargets(
-      ids: readonly string[],
-      currentSessionKeys: ReadonlySet<string>,
-    ): { targets: WaitTarget[]; errors: WaitError[] };
-    waitForCollector(params: {
-      ids: readonly string[];
-      currentSessionKeys: ReadonlySet<string>;
-      timeoutMs: number;
-      signal?: AbortSignal;
-    }): Promise<unknown>;
+export function collectorRun(
+  runId: string,
+  requesterSessionKey: string,
+  completion?: SubagentRunRecord["collectorCompletion"],
+): SubagentRunRecord {
+  return {
+    runId,
+    childSessionKey: `agent:worker:subagent:${runId}`,
+    controllerSessionKey: requesterSessionKey,
+    requesterSessionKey,
+    requesterDisplayKey: requesterSessionKey,
+    task: runId,
+    cleanup: "keep",
+    createdAt: Date.now(),
+    execution: { status: completion ? "terminal" : "running" },
+    collect: true,
+    swarmRequesterSessionKey: requesterSessionKey,
+    groupId: "group",
+    completion: { required: false, resultText: completion ? `result-${runId}` : undefined },
+    collectorCompletion: completion,
   };
-};
-
-function getTestApi(): AgentsWaitToolTestApi {
-  return (globalThis as Record<PropertyKey, unknown>)[
-    Symbol.for("openclaw.agentsWaitToolTestApi")
-  ] as AgentsWaitToolTestApi;
 }
-
-export const testing = getTestApi().testing;
