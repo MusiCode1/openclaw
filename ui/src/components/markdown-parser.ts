@@ -1,6 +1,5 @@
 import MarkdownIt, { type MarkdownIt as MarkdownItParser, type Token } from "markdown-it";
 import markdownItCjkFriendly from "markdown-it-cjk-friendly";
-import markdownItTaskLists from "markdown-it-task-lists";
 import { t } from "../i18n/index.ts";
 import { fileKindForPath, shortestFileLabels } from "./file-kind.ts";
 import { isGitHubHost } from "./github-link-eligibility.ts";
@@ -27,6 +26,7 @@ import { hasMarkdownLinkBoundaries } from "./markdown-link-boundary.ts";
 import type { MarkdownRenderEnv } from "./markdown-render-options.ts";
 import { installMarkdownSessionLinks } from "./markdown-session-links.ts";
 import { installMarkdownTables } from "./markdown-tables.ts";
+import { replaceMarkdownTextMatches } from "./markdown-text-replacements.ts";
 import { escapeMarkdownHtml } from "./markdown-text.ts";
 
 const INLINE_DATA_IMAGE_RE = /^data:image\/[a-z0-9.+-]+;base64,/i;
@@ -427,62 +427,50 @@ export function createMarkdownParser(): MarkdownItParser {
           continue;
         }
 
-        const replacements: typeof children = [];
-        let cursor = 0;
         MARKDOWN_FILE_LINK_SCAN_RE.lastIndex = 0;
-        for (const match of token.content.matchAll(MARKDOWN_FILE_LINK_SCAN_RE)) {
-          const matchIndex = match.index;
-          const matched = match[0];
-          const matchEnd = matchIndex + matched.length;
-          if (!hasMarkdownLinkBoundaries(token.content, matchIndex, matchEnd)) {
-            continue;
-          }
-          const target = parseMarkdownFileLinkTarget(matched);
-          if (!target) {
-            continue;
-          }
-          if (matchIndex > cursor) {
-            const leading = new state.Token("text", "", 0);
-            leading.content = token.content.slice(cursor, matchIndex);
-            replacements.push(leading);
-          }
-          const open = new state.Token("link_open", "a", 1);
-          open.markup = "file-link";
-          open.attrSet("class", "markdown-file-link");
-          open.attrSet("role", "button");
-          open.attrSet("tabindex", "0");
-          open.attrSet("data-file-path", target.path);
-          open.attrSet("data-file-kind", fileKindForPath(target.path));
-          if (target.line !== null) {
-            open.attrSet("data-file-line", String(target.line));
-          }
-          const label = new state.Token("text", "", 0);
-          label.content = matched;
-          const close = new state.Token("link_close", "a", -1);
-          close.markup = "file-link";
-          replacements.push(open, label, close);
-          decorations.push({
-            path: target.path,
-            reference: matched,
-            applyLabel: (text) => {
-              label.content = text;
-              if (text !== matched) {
-                open.attrSet("title", matched);
-              }
-            },
-          });
-          cursor = matchEnd;
-        }
-        if (replacements.length === 0) {
-          continue;
-        }
-        if (cursor < token.content.length) {
-          const trailing = new state.Token("text", "", 0);
-          trailing.content = token.content.slice(cursor);
-          replacements.push(trailing);
-        }
-        children.splice(index, 1, ...replacements);
-        index += replacements.length - 1;
+        index = replaceMarkdownTextMatches(
+          state,
+          children,
+          index,
+          MARKDOWN_FILE_LINK_SCAN_RE,
+          (match) => {
+            const matchIndex = match.index;
+            const matched = match[0];
+            const matchEnd = matchIndex + matched.length;
+            if (!hasMarkdownLinkBoundaries(token.content, matchIndex, matchEnd)) {
+              return null;
+            }
+            const target = parseMarkdownFileLinkTarget(matched);
+            if (!target) {
+              return null;
+            }
+            const open = new state.Token("link_open", "a", 1);
+            open.markup = "file-link";
+            open.attrSet("class", "markdown-file-link");
+            open.attrSet("role", "button");
+            open.attrSet("tabindex", "0");
+            open.attrSet("data-file-path", target.path);
+            open.attrSet("data-file-kind", fileKindForPath(target.path));
+            if (target.line !== null) {
+              open.attrSet("data-file-line", String(target.line));
+            }
+            const label = new state.Token("text", "", 0);
+            label.content = matched;
+            const close = new state.Token("link_close", "a", -1);
+            close.markup = "file-link";
+            decorations.push({
+              path: target.path,
+              reference: matched,
+              applyLabel: (text) => {
+                label.content = text;
+                if (text !== matched) {
+                  open.attrSet("title", matched);
+                }
+              },
+            });
+            return [open, label, close];
+          },
+        );
       }
     }
     // A path carries far more characters than identity: the basename is what a
@@ -606,32 +594,44 @@ export function createMarkdownParser(): MarkdownItParser {
 
   installMarkdownGitHubRefs(markdownParser);
 
-  // Enable GFM task list checkboxes (- [x] / - [ ]).
-  // enabled: false keeps checkboxes read-only (disabled="") — task lists in
-  // chat messages are display-only, not interactive forms.
-  // label: false avoids wrapping item text in <label>, which would break
-  // accessibility when the item contains links (MDN warns against anchors inside labels).
-  markdownParser.use(markdownItTaskLists, { enabled: false, label: false });
-
-  // The plugin inserts its checkbox as the first inline child. Trust only that
-  // generated token so later user-authored HTML remains escaped.
-  markdownParser.core.ruler.after("github-task-lists", "task-list-allowlist", (state) => {
-    for (const [index, listItem] of state.tokens.entries()) {
-      if (listItem.type !== "list_item_open" || listItem.attrGet("class") !== "task-list-item") {
+  markdownParser.core.ruler.after("inline", "task-lists", (state) => {
+    for (const [index, inline] of state.tokens.entries()) {
+      const listItem = state.tokens[index - 2];
+      const children = inline.children;
+      const firstChild = children?.[0];
+      if (
+        inline.type !== "inline" ||
+        state.tokens[index - 1]?.type !== "paragraph_open" ||
+        listItem?.type !== "list_item_open" ||
+        !/^\[[ xX]\] /.test(inline.content) ||
+        !children ||
+        !firstChild
+      ) {
         continue;
       }
-      const checkbox = state.tokens[index + 2]?.children?.[0];
-      if (checkbox?.type === "html_inline") {
-        checkbox.meta = { taskListPlugin: true };
+      // Task lists are display-only; labels would also wrap any links in the item.
+      const checkbox = new state.Token("html_inline", "", 0);
+      const checked = inline.content[1] !== " " ? ' checked=""' : "";
+      checkbox.content = `<input class="task-list-item-checkbox"${checked} disabled="" type="checkbox">`;
+      // Trust only the generated checkbox, including for transcript-role projection.
+      checkbox.meta = { taskListPlugin: true };
+      firstChild.content = firstChild.content.slice(3);
+      children.unshift(checkbox);
+      inline.content = inline.content.slice(3);
+      listItem.attrSet("class", "task-list-item");
+      for (let parent = index - 3; parent >= 0; parent--) {
+        const token = state.tokens[parent];
+        if (token?.level === listItem.level - 1) {
+          token.attrSet("class", "contains-task-list");
+          break;
+        }
       }
     }
   });
 
   // Override html_block and html_inline to escape raw HTML (#13937). Progress-card
   // rendering strips non-progress HTML instead of exposing escaped tag text.
-  // Exception: html_inline tokens marked by a trusted plugin (meta.taskListPlugin)
-  // are allowed through — they are generated by our own plugin pipeline, not user input,
-  // and DOMPurify provides the final safety net regardless.
+  // Only generated task-list checkboxes bypass escaping; DOMPurify still sanitizes them.
   // Renderer rules degrade to empty output on impossible token misses instead of
   // throwing mid-render; markdown input is untrusted and the chat view must not crash.
   markdownParser.renderer.rules.html_block = (tokens, index, _options, env) =>

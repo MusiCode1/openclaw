@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import { throwSqliteLifecycleErrors } from "../infra/sqlite-coordinator.js";
 import {
   inspectDatabasePathIdentitySync,
   readDatabasePathIdentitySync,
@@ -22,6 +22,8 @@ export function isStateDatabaseReadAdmissionInvalidatedError(error: unknown): bo
 
 export type OpenClawStateDatabaseReadAdmission = {
   readonly databasePath: string;
+  /** Stable across first creation and aliases; coordinates work but grants no authority. */
+  readonly coordinationKey: string;
   readonly identity: DatabasePathIdentity;
   assertCurrent: () => void;
 };
@@ -32,6 +34,7 @@ export type OpenClawStateDatabaseAsyncResource = {
 };
 
 type IdentityRecord = {
+  readonly coordinationKey: string;
   identity: DatabasePathIdentity;
   paths: Set<string>;
   generation: object;
@@ -296,16 +299,7 @@ export function createOpenClawDatabaseMaintenanceScope(
                 const errors = results.flatMap((result) =>
                   result.status === "rejected" ? [result.reason] : [],
                 );
-                if (errors.length === 1) {
-                  throw errors[0];
-                }
-                if (errors.length > 1) {
-                  throw createSqliteLifecycleAggregateError(
-                    errors,
-                    "Maintenance resource cleanup failed",
-                    errors[0],
-                  );
-                }
+                throwSqliteLifecycleErrors(errors, "Maintenance resource cleanup failed");
               }
             }
           }
@@ -430,7 +424,13 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
       }
     }
     if (!record) {
-      record = { identity, paths: new Set(), generation: {}, admissions: new Map() };
+      record = {
+        coordinationKey: identity.key,
+        identity,
+        paths: new Set(),
+        generation: {},
+        admissions: new Map(),
+      };
       records.set(identity.key, record);
     }
     bindPath(record, resolvedPath);
@@ -478,9 +478,10 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
   };
   // Keep closure creation off capture's warm branch: V8 otherwise allocates its
   // captured environment even when returning an already retained admission.
-  const captureResolved = (databasePath: string): OpenClawStateDatabaseReadAdmission => {
-    const record = resolve(databasePath);
-    assertOpen(record);
+  const captureRecord = (
+    record: IdentityRecord,
+    databasePath: string,
+  ): OpenClawStateDatabaseReadAdmission => {
     const previous = record.admissions.get(databasePath);
     if (previous) {
       return previous;
@@ -488,6 +489,7 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
     const generation = record.generation;
     const admission: OpenClawStateDatabaseReadAdmission = Object.freeze({
       databasePath,
+      coordinationKey: record.coordinationKey,
       get identity() {
         return record.identity;
       },
@@ -503,6 +505,11 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
     record.admissions.set(databasePath, admission);
     return admission;
   };
+  const captureResolved = (databasePath: string): OpenClawStateDatabaseReadAdmission => {
+    const record = resolve(databasePath);
+    assertOpen(record);
+    return captureRecord(record, databasePath);
+  };
 
   return {
     identity(pathname: string): DatabasePathIdentity | undefined {
@@ -511,7 +518,10 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
     knownIdentity(this: void, pathname: string): DatabasePathIdentity | undefined {
       return known(pathname)?.identity;
     },
-    publish(pathname: string): DatabasePathIdentity {
+    publish(pathname: string): {
+      identity: DatabasePathIdentity;
+      admission: OpenClawStateDatabaseReadAdmission;
+    } {
       const resolvedPath = path.resolve(pathname);
       const identity = readDatabasePathIdentitySync(resolvedPath);
       const previous = recordsByPath.get(resolvedPath);
@@ -533,7 +543,9 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
       }
       bindPath(record, resolvedPath);
       bindPath(record, identity.canonicalPath);
-      return identity;
+      // Private native binding may publish while reads are sealed. Retain its
+      // generation now; every later worker use still checks the seal and lifetime.
+      return { identity, admission: captureRecord(record, resolvedPath) };
     },
     invalidate(pathname?: string): void {
       if (pathname === undefined) {
@@ -633,16 +645,7 @@ export function createOpenClawStateDatabaseAsyncLifecycle() {
               }),
             );
           }
-          if (errors.length === 1) {
-            throw errors[0];
-          }
-          if (errors.length > 1) {
-            throw createSqliteLifecycleAggregateError(
-              errors,
-              "OpenClaw state resource drainage failed",
-              errors[0],
-            );
-          }
+          throwSqliteLifecycleErrors(errors, "OpenClaw state resource drainage failed");
           const retired = retireNative(record?.identity);
           attempts.delete(record);
           seals.delete(current.seal);
