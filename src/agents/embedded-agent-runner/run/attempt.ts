@@ -22,6 +22,7 @@ import {
 import { resolveAgentDir } from "../../agent-scope.js";
 import { buildExecAutoReviewTranscript } from "../../exec-auto-review-transcript.js";
 import { recordAgentCleanupFailure, runOwnedAgentCleanup } from "../../run-cleanup-timeout.js";
+import { withRuntimeToolSchemaQuarantine } from "../../tool-schema-quarantine.js";
 import {
   clearToolSearchCatalog,
   type ToolSearchCatalogRef,
@@ -244,10 +245,11 @@ async function runEmbeddedAttemptOwned(
         attempt: params,
         setup,
         markCoreToolStage: (name) => corePluginToolStages.mark(name),
-        onYield: (message, acknowledgment) => {
+        onYield: (message, acknowledgment, messageWaitRegistered) => {
           yieldDetected = true;
           yieldMessage = message;
           yieldAcknowledgment = acknowledgment;
+          yieldMessageWaitRegistered = messageWaitRegistered;
           queueYieldInterruptForSession?.();
           runAbortController.abort(SESSIONS_YIELD_ABORT_REASON);
           abortSessionForYield?.();
@@ -306,6 +308,7 @@ async function runEmbeddedAttemptOwned(
     let yieldDetected = false;
     let yieldMessage: string | null = null;
     let yieldAcknowledgment: string | undefined;
+    let yieldMessageWaitRegistered: boolean | undefined;
     // Late-binding reference so onYield can abort the session (declared after tool creation)
     let abortSessionForYield: (() => void) | null = null;
     let queueYieldInterruptForSession: (() => void) | null = null;
@@ -328,7 +331,7 @@ async function runEmbeddedAttemptOwned(
     // diagnostics, so arm cleanup before either can fail and leak the catalog.
     toolSearchCatalogApplied = toolSearchCatalogRef !== undefined;
     const preparedToolCatalog = await prepare("attempt.tool-catalog", () =>
-      prepStages.measureSync("tool-catalog", () =>
+      prepStages.measure("tool-catalog", () =>
         prepareEmbeddedAttemptToolCatalog({
           attempt: params,
           setup,
@@ -441,28 +444,30 @@ async function runEmbeddedAttemptOwned(
         diagnostics: { diagnosticTrace, runTrace },
         state: executionState,
         lifecycle: {
-          applyPermissionMode: (mode, revokeApprovals) => {
-            preparedToolBase.refreshPermissionMode(mode, revokeApprovals);
-            preparedBundleTools.refreshTools();
-            preparedToolCatalog.refreshTools();
-            preparedSessionRuntime.agentSession.refreshTools();
-            promptToolPolicy.refresh();
-            const prepareToolPrompt = preparedSystemPrompt.prepareToolPrompt;
-            preparedSessionRuntime.agentSession.setPermissionPromptPreparation(
-              prepareToolPrompt
-                ? () =>
-                    prepareToolPrompt(promptToolPolicy.current.effectiveTools, {
-                      permissionChanged: true,
-                    })
-                : undefined,
-            );
-            params.permissionChange?.recordApplied(mode);
-          },
+          applyPermissionMode: (mode, revokeApprovals) =>
+            withRuntimeToolSchemaQuarantine((recordQuarantine) => {
+              preparedToolBase.refreshPermissionMode(mode, revokeApprovals);
+              preparedBundleTools.refreshTools(recordQuarantine);
+              preparedToolCatalog.refreshTools(recordQuarantine);
+              preparedSessionRuntime.agentSession.refreshTools();
+              promptToolPolicy.refresh();
+              const prepareToolPrompt = preparedSystemPrompt.prepareToolPrompt;
+              preparedSessionRuntime.agentSession.setPermissionPromptPreparation(
+                prepareToolPrompt
+                  ? () =>
+                      prepareToolPrompt(promptToolPolicy.current.effectiveTools, {
+                        permissionChanged: true,
+                      })
+                  : undefined,
+              );
+              params.permissionChange?.recordApplied(mode);
+            }),
           readYieldState: () => ({
             yieldAbortSettled,
             yieldDetected,
             yieldMessage,
             yieldAcknowledgment,
+            yieldMessageWaitRegistered,
           }),
           setToolSearchCatalogExecutor: (executor) => {
             toolSearchCatalogExecutor = executor;

@@ -17,6 +17,12 @@ import { withSynchronousArtifactPreservingStateSnapshot } from "../state/opencla
 import { DuplicateAgentDirError, findDuplicateAgentDirs } from "./agent-dirs.js";
 import { applyConfigEnvVars, cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
 import { ConfigIncludeError, ConfigIncludeReadError } from "./includes.js";
+import {
+  resolveConfigIoEffect,
+  runConfigIoAsync,
+  runConfigIoSync,
+  type ConfigIoOperation,
+} from "./io.effects.js";
 import { isInvalidConfigError } from "./io.invalid-config.js";
 import { observeConfigSnapshot, observeConfigSnapshotSync } from "./io.observe.js";
 import {
@@ -36,7 +42,6 @@ import type {
   ConfigRecoveryCandidatePreparation,
 } from "./io.types.js";
 import { formatConfigIssueSummary } from "./issue-format.js";
-import { migrateLegacyContextBudgetConfig } from "./legacy.context-budget.js";
 import { inheritLegacyDefaultAgentId } from "./legacy.default-agent-owner.js";
 import { migratePersistedImplicitMainRoster } from "./legacy.roster.js";
 import { copyConfigResolutionFacts } from "./resolution-facts.js";
@@ -47,15 +52,7 @@ import {
   validateConfigObjectWithPlugins,
   validateConfigObjectWithPluginsAsync,
 } from "./validation.js";
-import type {
-  PreparedConfigValidationPluginMetadata,
-  ValidateConfigWithPluginsResult,
-} from "./validation.types.js";
-
-type RecoveryCandidateValidation = {
-  authoredCandidate: unknown;
-  validated: ValidateConfigWithPluginsResult;
-};
+import type { PreparedConfigValidationPluginMetadata } from "./validation.types.js";
 
 export type ConfigRecoveryCandidateTransform = (params: {
   candidate: ConfigRecoveryCandidate;
@@ -227,23 +224,17 @@ export function createConfigIoContext(
       includeFileTargets,
     );
     const resolution = resolveConfigForRead(resolvedIncludes, env, deps.lowerPrecedenceEnv);
-    const contextBudgetConfig = migrateLegacyContextBudgetConfig(
-      resolution.resolvedConfigRaw,
-    ).config;
     return coerceConfig(
-      migratePersistedImplicitMainRoster(contextBudgetConfig, { env, homedir: deps.homedir })
-        .config,
+      migratePersistedImplicitMainRoster(resolution.resolvedConfigRaw, {
+        env,
+        homedir: deps.homedir,
+      }).config,
     );
   }
 
-  function* prepareRecoveryBackupCandidateSteps(candidate: ConfigRecoveryCandidate): Generator<
-    {
-      sync: () => RecoveryCandidateValidation;
-      async: () => Promise<RecoveryCandidateValidation>;
-    },
-    ConfigRecoveryCandidatePreparation,
-    RecoveryCandidateValidation
-  > {
+  function* prepareRecoveryBackupCandidateSteps(
+    candidate: ConfigRecoveryCandidate,
+  ): ConfigIoOperation<ConfigRecoveryCandidatePreparation> {
     try {
       const originalEnv = cloneEnvWithPlatformSemantics(deps.env);
       const includeProvenance: NonNullable<ConfigFileSnapshot["includeProvenance"]>[number][] = [];
@@ -297,7 +288,7 @@ export function createConfigIoContext(
           },
         };
       };
-      const { authoredCandidate: preparedRawConfig, validated } = yield {
+      const { authoredCandidate: preparedRawConfig, validated } = yield* resolveConfigIoEffect({
         sync: () =>
           withSynchronousArtifactPreservingStateSnapshot(() => {
             const prepared = prepareValidation(resolveDeferredPluginMigrations());
@@ -319,7 +310,7 @@ export function createConfigIoContext(
             }),
           };
         },
-      };
+      });
       if (!validated.ok) {
         const issueSummary = formatConfigIssueSummary(validated.issues.slice(0, 3)) ?? "";
         const detail = issueSummary.length > 800 ? `${issueSummary.slice(0, 799)}…` : issueSummary;
@@ -354,31 +345,13 @@ export function createConfigIoContext(
   function prepareRecoveryBackupCandidate(
     candidate: ConfigRecoveryCandidate,
   ): ConfigRecoveryCandidatePreparation {
-    const steps = prepareRecoveryBackupCandidateSteps(candidate);
-    let next = steps.next();
-    while (!next.done) {
-      try {
-        next = steps.next(next.value.sync());
-      } catch (error) {
-        next = steps.throw(error);
-      }
-    }
-    return next.value;
+    return runConfigIoSync(prepareRecoveryBackupCandidateSteps(candidate));
   }
 
   async function prepareRecoveryBackupCandidateAsync(
     candidate: ConfigRecoveryCandidate,
   ): Promise<ConfigRecoveryCandidatePreparation> {
-    const steps = prepareRecoveryBackupCandidateSteps(candidate);
-    let next = steps.next();
-    while (!next.done) {
-      try {
-        next = steps.next(await next.value.async());
-      } catch (error) {
-        next = steps.throw(error);
-      }
-    }
-    return next.value;
+    return await runConfigIoAsync(prepareRecoveryBackupCandidateSteps(candidate));
   }
 
   return {

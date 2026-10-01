@@ -21,9 +21,7 @@ import type {
 import { ensurePluginAllowlisted } from "./plugins-allowlist.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
-export function resolvePluginAutoEnableCandidateReason(
-  candidate: PluginAutoEnableCandidate,
-): string {
+function resolvePluginAutoEnableCandidateReason(candidate: PluginAutoEnableCandidate): string {
   switch (candidate.kind) {
     case "channel-configured":
       return `${candidate.channelId} configured`;
@@ -35,6 +33,8 @@ export function resolvePluginAutoEnableCandidateReason(
       return `${candidate.providerId} speech provider selected`;
     case "worker-provider-selected":
       return `${candidate.providerId} worker provider selected`;
+    case "storage-provider-selected":
+      return `${candidate.providerId} storage provider selected`;
     case "decision-provider-selected":
       return `${candidate.providerId} decision provider selected`;
     case "agent-harness-runtime-configured":
