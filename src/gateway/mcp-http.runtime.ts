@@ -18,7 +18,7 @@ import { applyEmbeddedAttemptToolsAllow } from "../agents/embedded-agent-runner/
 import { loadNodeExecAvailability } from "../agents/node-exec-availability.js";
 import type { PreparedRootedExecutionCapability } from "../agents/rooted-run-params.js";
 import { normalizeToolPolicyName } from "../agents/tool-policy.js";
-import { hasSessionControlAuthority } from "../agents/tools/sessions-control-authority.js";
+import { hasSessionControlAuthority } from "../agents/tools/sessions-operator-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { DirectoryCache } from "../infra/outbound/directory-cache.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
@@ -30,6 +30,7 @@ import {
   type McpLoopbackTool,
   type McpToolSchemaEntry,
 } from "./mcp-http.schema.js";
+import { assertCompletionGrantLineage } from "./tool-resolution-completion.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 // MCP loopback runtime scopes gateway tools to the current session/channel
@@ -110,6 +111,7 @@ async function resolveNodeExecScope(
 ): Promise<McpLoopbackScopeParams> {
   const shouldResolveExec =
     !params.rootedExecution &&
+    !params.context.trustedInternalHandoff &&
     params.context.nodeExecAllowed === true &&
     resolveMediatedNativeTools(params.context.toolsAllow, mode).size === 0;
   if (!shouldResolveExec) {
@@ -195,9 +197,10 @@ function resolveMcpLoopbackTools(
   }
   // Restricted CLI grants use OpenClaw's implementations for coding tools;
   // native CLI tools bypass path, approval, sandbox, and exec policy.
-  const mediatedNativeTools = params.rootedExecution
-    ? new Set(NATIVE_TOOL_EXCLUDE)
-    : resolveMediatedNativeTools(toolsAllow, mode);
+  const mediatedNativeTools =
+    params.rootedExecution || context.trustedInternalHandoff
+      ? new Set(NATIVE_TOOL_EXCLUDE)
+      : resolveMediatedNativeTools(toolsAllow, mode);
   for (const toolName of mediatedNativeTools) {
     excludeToolNames.delete(toolName);
   }
@@ -345,6 +348,9 @@ export class McpLoopbackToolCache {
     const preDiscoveryCacheKey = buildMcpLoopbackToolCacheKey(nodeExecParams);
     const preDiscoveryCached = this.#entries.get(preDiscoveryCacheKey, nodeExecParams.cfg);
     if (preDiscoveryCached) {
+      // A cached list must not outlive the lineage its completion grant was minted for.
+      // Check after the awaits above, at the point the list is served.
+      assertCompletionGrantLineage(input);
       return preDiscoveryCached;
     }
 
@@ -352,6 +358,7 @@ export class McpLoopbackToolCache {
     const resolved = await resolvePairedComputerNodeScope(nodeExecParams, "exact");
     input.signal?.throwIfAborted();
     const { params } = resolved;
+    assertCompletionGrantLineage(input);
     const cacheKey = buildMcpLoopbackToolCacheKey(params);
     const cached = this.#entries.get(cacheKey, params.cfg);
     if (cached) {

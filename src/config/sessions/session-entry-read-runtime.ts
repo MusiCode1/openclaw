@@ -194,6 +194,7 @@ export async function withSessionDiagnosticTextInWorker(
 export async function readSessionEntryInWorker(
   input: SessionAccessScope,
   assertCallerCurrent: () => void,
+  onRegistryChange?: (change: AgentDatabaseRegistryChange) => void,
 ) {
   const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
@@ -249,7 +250,10 @@ export async function readSessionEntryInWorker(
       };
       const source = {
         assertCurrent,
-        onRegistryChange: owner.onRegistryChange,
+        onRegistryChange(change) {
+          owner.onRegistryChange(change);
+          onRegistryChange?.(change);
+        },
         createAdmission(binding) {
           return () => ({
             nativeLocations: binding.nativeLocations,
@@ -501,7 +505,7 @@ type SessionStoreWorkerReader = Pick<
   assertCurrent: () => void;
 };
 
-async function withSessionStoreReaderInWorker<T>(
+export async function withSessionStoreReaderInWorker<T>(
   input: Omit<SessionStoreWorkerReadScope, "agentId"> & {
     agentId?: string;
     defaultAgentId?: string;
@@ -516,14 +520,15 @@ async function withSessionStoreReaderInWorker<T>(
     backing?: boolean;
     lane?: SessionHistoryWorkerLane;
     dataOnly?: boolean;
-    logical?: { assertCurrent: () => void; onReadError: (error: unknown) => Promise<T> };
+    logical?: { assertCurrent?: () => void; onReadError?: (error: unknown) => Promise<T> };
   } = {},
 ): Promise<T> {
   const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const agentId = input.agentId === undefined ? undefined : normalizeAgentId(input.agentId);
   const storePath = input.storePath;
-  logical?.assertCurrent();
+  logical?.assertCurrent?.();
+  const onReadError = logical?.onReadError;
   const target = resolveUnsuffixedSqliteTargetFromSessionStorePath(storePath);
   let candidates: SessionStoreReadCandidate[];
   let direct: SessionStoreReadCandidate | undefined;
@@ -533,10 +538,10 @@ async function withSessionStoreReaderInWorker<T>(
     direct = captured && captured.path === captured.physicalPath ? captured : undefined;
     candidates = direct ? [direct] : captureSessionStoreReadCandidates(storePath);
   } catch (error) {
-    if (!logical) {
+    if (!onReadError) {
       throw error;
     }
-    return logical.onReadError(error);
+    return onReadError(error);
   }
   const native = backing
     ? retainOpenClawAgentDatabaseReadCandidates(
@@ -556,7 +561,7 @@ async function withSessionStoreReaderInWorker<T>(
     if (!sourceActive) {
       throw new Error("Session entry read source is no longer active");
     }
-    logical?.assertCurrent();
+    logical?.assertCurrent?.();
     if (logical) {
       for (const candidate of candidates) {
         if (
@@ -652,14 +657,14 @@ async function withSessionStoreReaderInWorker<T>(
         async (selected, owner) =>
           readDatabase(selected.database, selected.logicalAgentId, selected.sourcePath, owner),
         assertSourcesCurrent,
-        logical &&
+        onReadError &&
           (async (error, assertDiscoveryCurrent) => {
             assertFinalCurrent = () => {
               assertSourcesCurrent();
               assertDiscoveryCurrent();
             };
             assertFinalCurrent();
-            const value = await logical.onReadError(error);
+            const value = await onReadError(error);
             assertFinalCurrent();
             return value;
           }),

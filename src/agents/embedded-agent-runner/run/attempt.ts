@@ -201,6 +201,7 @@ async function runEmbeddedAttemptOwned(
     restoreSkillEnv = preparedSkills.restoreSkillEnv;
     const {
       codeModeSkills,
+      installedSkills,
       skillReadResources,
       skillUsagePaths,
       skillsPrompt,
@@ -260,6 +261,7 @@ async function runEmbeddedAttemptOwned(
         skillReadResources,
         skillsSnapshot: skillsSnapshotForRun,
         codeModeSkills,
+        installedSkills,
         reviewTranscript: () => {
           if (!resources.session || runAbortController.signal.aborted) {
             return undefined;
@@ -405,6 +407,7 @@ async function runEmbeddedAttemptOwned(
       );
       const promptToolPolicy = createPromptBuildToolPolicy({
         session: preparedSessionRuntime.agentSession.activeSession,
+        readModelTools: () => preparedSessionRuntime.agentSession.activeSession.agent.state.tools,
         effectiveTools,
         uncompactedEffectiveTools,
         tools: preparedBundleTools.tools,
