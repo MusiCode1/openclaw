@@ -8381,6 +8381,18 @@ test "$package_manager" = "pnpm@12.1.0"
     expect(JSON.stringify(npm12Job)).not.toContain("secrets.");
   });
 
+  it("checks the installed package tree budget immediately after npm 12 installation", () => {
+    const job = workflowJob(PACKAGE_ACCEPTANCE_WORKFLOW, "npm_12_install_sh");
+    const install = workflowStep(job, "Run install.sh with npm 12");
+    const budget = workflowStep(job, "Check installed package tree budget");
+    const steps = job.steps ?? [];
+    expect(steps.indexOf(budget)).toBe(steps.indexOf(install) + 1);
+    expect(budget.shell).toBe("bash");
+    expect(budget.run).toBe(
+      'set -euo pipefail\nnode scripts/check-openclaw-installed-package-budget.mts "$RUNNER_TEMP/openclaw-npm12-prefix/lib/node_modules/openclaw"\n',
+    );
+  });
+
   it("binds npm 12 installation to the supplied prerelease dependency artifact", () => {
     const job = workflowJob(PACKAGE_ACCEPTANCE_WORKFLOW, "npm_12_install_sh");
     const validate = workflowStep(job, "Validate prerelease plugin registry artifact identity");
@@ -10631,7 +10643,17 @@ describe("package artifact reuse", () => {
     expect(dockerRows).toContainEqual(
       expect.objectContaining({ suite_id: "live-gateway-docker", timeout_minutes: 40 }),
     );
-    expect(workflow).toContain("suite_id: native-live-extensions-a-k");
+    expect(
+      workflowMatrixEntry(
+        LIVE_E2E_WORKFLOW,
+        "validate_live_media_provider_suites",
+        "native-live-extensions-a-k",
+      ),
+    ).toMatchObject({
+      command:
+        "OPENCLAW_LIVE_ANTHROPIC_COMPACTION=1 node .release-harness/scripts/test-live-shard.mjs native-live-extensions-a-k",
+      profiles: "full",
+    });
     expect(workflow).toContain("suite_id: native-live-extensions-l-n");
     expect(workflow).toContain("suite_id: native-live-extensions-moonshot");
     expect(workflow).toContain("suite_id: native-live-extensions-openai");

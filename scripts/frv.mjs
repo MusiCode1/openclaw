@@ -27,7 +27,6 @@ import {
   composeReleaseChildAttemptEvidence,
   isReleaseGhArtifactMissingError,
   MAX_RELEASE_ARTIFACT_BYTES,
-  WINDOWS_NODE_CI_ADVISORY,
   planReleaseChildRerun,
   releaseChildSpec,
   releaseChildSpecs,
@@ -925,7 +924,6 @@ export function createClient(repository, dependencies = {}) {
       }
     },
     rerunFailed: (runId) => rerun(runId, "rerun-failed-jobs"),
-    cancelRun: (runId) => rerun(runId, "cancel"),
     rerunRun: (runId) => rerun(runId, "rerun"),
     listRuns: (query) => listReleasePriorityRuns(query, apiJson, apiText),
     async getVariable(name) {
@@ -2405,14 +2403,9 @@ function failedJobEvent(owner, job, attempt) {
   }
   const labels = Array.isArray(job.labels) && job.labels.length > 0 ? job.labels.join(",") : "none";
   const runner = job.runner_name ? ` / ${job.runner_name}` : "";
-  const advisory =
-    owner === WINDOWS_NODE_CI_ADVISORY.child &&
-    WINDOWS_NODE_CI_ADVISORY.jobNamePattern.test(job.name)
-      ? ` [advisory ${WINDOWS_NODE_CI_ADVISORY.id}]`
-      : "";
   return [
     `job:${job.id}`,
-    `${owner} job "${job.name}" ${job.conclusion}${advisory} (attempt ${job.run_attempt ?? attempt}; runner ${labels}${runner})`,
+    `${owner} job "${job.name}" ${job.conclusion} (attempt ${job.run_attempt ?? attempt}; runner ${labels}${runner})`,
     job.html_url,
   ];
 }
