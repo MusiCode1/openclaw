@@ -8,6 +8,7 @@ import {
   prepareTranscriptMessageAppend,
   prepareTranscriptMessageAppendForWorker,
 } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
+import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { transcriptEventContextEligibility } from "../../config/sessions/session-transcript-projection-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
@@ -34,7 +35,7 @@ import {
   type PersistRecordResult,
   type PersistWorkerRecordResult,
 } from "./session-manager-persistence-entry.js";
-import { isSqliteTranscriptMutationConflict } from "./session-manager-persistence-error.js";
+import { SessionManagerActorCommittedError } from "./session-manager-persistence-error.js";
 import { SessionManagerSuffixPersistence } from "./session-manager-suffix-persistence.js";
 import type {
   AppendPersistenceOptions,
@@ -73,6 +74,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       if (
         !admission ||
         (isIncognitoSessionKey(this.persistenceTarget?.sessionKey) &&
+          "db" in admission.database &&
           !(canonical.type === "compaction" && persistCompaction))
       ) {
         // Incognito retains its host-owned store until actor activation; detached views do not write.
@@ -197,7 +199,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
         admittedUserId,
       );
       if (validatedMutationAt === undefined) {
-        throw this.createTranscriptMutationConflictError();
+        throw new SqliteTranscriptMutationConflictError(this.persistenceTarget.sessionId);
       }
       attemptOptions = copyCodeModeSourceAppendOptions(persistenceOptions, {
         ...persistenceOptions,
@@ -234,7 +236,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       const retryableExplicitParentAppend = deliberateBranchAppend || sideBranchAppend;
       if (
         (!activeBranchAppend && !retryableExplicitParentAppend) ||
-        !isSqliteTranscriptMutationConflict(error)
+        !(error instanceof SqliteTranscriptMutationConflictError)
       ) {
         throw error;
       }
@@ -289,6 +291,9 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     appended: boolean;
     viewWasSuperseded?: true;
   } {
+    if (committed.viewFailure instanceof SessionManagerActorCommittedError) {
+      throw committed.viewFailure;
+    }
     if (this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
       if (
         committed.result?.adoptedMessageId &&
@@ -442,14 +447,6 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     };
   }
 
-  private createTranscriptMutationConflictError(): Error {
-    const error = new Error(
-      `SQLite transcript changed while preparing rewrite for ${this.persistenceTarget?.sessionId ?? this.sessionId}`,
-    );
-    error.name = "SqliteTranscriptMutationConflictError";
-    return error;
-  }
-
   // SDK v2026.9.5 exposes this synchronous opt-in; internal replay uses async preparation.
   resolveCurrentTurnEntryId(
     isInterruptedTail?: (entry: SessionEntry) => boolean,
@@ -491,6 +488,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       },
       matchesUser,
       signal,
+      this,
     );
   }
 
