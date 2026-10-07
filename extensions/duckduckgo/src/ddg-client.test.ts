@@ -1,75 +1,59 @@
-import { describe, expect, it } from "vitest";
-import { __testing } from "./ddg-client.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-describe("duckduckgo html parsing", () => {
-  it("decodes direct and redirect urls", () => {
-    expect(
-      __testing.decodeDuckDuckGoUrl(
-        "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fsearch%3Fq%3Dclaw",
-      ),
-    ).toBe("https://example.com/search?q=claw");
-    expect(__testing.decodeDuckDuckGoUrl("https://example.com")).toBe("https://example.com");
-  });
+type EndpointCall = {
+  url: string;
+  timeoutSeconds: number;
+  signal?: AbortSignal;
+  init?: RequestInit;
+};
 
-  it("decodes common html entities", () => {
-    expect(__testing.decodeHtmlEntities("Fish &amp; Chips&nbsp;&hellip; &#39;ok&#39;")).toBe(
-      "Fish & Chips ... 'ok'",
-    );
-  });
+const endpointMockState: {
+  calls: EndpointCall[];
+  responses: Response[];
+} = {
+  calls: [],
+  responses: [],
+};
 
-  it("parses results when href appears before class", () => {
-    const html = `
-      <a href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com" class="result__a">
-        Example &amp; Co
-      </a>
-      <a class="result__snippet">Fast&nbsp;search &hellip; with details</a>
-      <a class="result__a" href="https://example.org/direct">Direct result</a>
-      <a class="result__snippet">Second snippet</a>
-    `;
-
-    expect(__testing.parseDuckDuckGoHtml(html)).toEqual([
-      {
-        title: "Example & Co",
-        url: "https://example.com",
-        snippet: "Fast search ... with details",
+vi.mock("openclaw/plugin-sdk/provider-web-search", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/provider-web-search")>();
+  return {
+    ...actual,
+    withTrustedWebSearchEndpoint: vi.fn(
+      async (params: EndpointCall, run: (response: Response) => Promise<unknown>) => {
+        endpointMockState.calls.push(params);
+        const response = endpointMockState.responses.shift();
+        if (!response) {
+          throw new Error("Missing mocked DuckDuckGo response.");
+        }
+        return await run(response);
       },
-      {
-        title: "Direct result",
-        url: "https://example.org/direct",
-        snippet: "Second snippet",
-      },
-    ]);
+    ),
+  };
+});
+
+const { runDuckDuckGoSearch } = await import("./ddg-client.js");
+
+function htmlResponse(body = "<html><body>no results</body></html>") {
+  return new Response(body, { headers: { "content-type": "text/html" }, status: 200 });
+}
+
+describe("runDuckDuckGoSearch User-Agent", () => {
+  beforeEach(() => {
+    endpointMockState.calls = [];
+    endpointMockState.responses = [htmlResponse()];
   });
 
-  it("returns no results for bot challenge pages", () => {
-    const html = `
-      <html>
-        <body>
-          <form>
-            <h1>Are you a human?</h1>
-            <div class="g-recaptcha">captcha</div>
-          </form>
-        </body>
-      </html>
-    `;
+  it("sends an honest, plugin-identifying User-Agent instead of a spoofed browser UA", async () => {
+    await runDuckDuckGoSearch({
+      query: "OpenClaw DuckDuckGo request identity",
+      cacheTtlMinutes: 0,
+    });
 
-    expect(__testing.isBotChallenge(html)).toBe(true);
-    expect(__testing.parseDuckDuckGoHtml(html)).toEqual([]);
-  });
-
-  it("does not treat ordinary result snippets mentioning challenge as bot pages", () => {
-    const html = `
-      <a class="result__a" href="https://example.com/challenge">Coding Challenge</a>
-      <a class="result__snippet">A fun coding challenge for interview prep.</a>
-    `;
-
-    expect(__testing.isBotChallenge(html)).toBe(false);
-    expect(__testing.parseDuckDuckGoHtml(html)).toEqual([
-      {
-        title: "Coding Challenge",
-        url: "https://example.com/challenge",
-        snippet: "A fun coding challenge for interview prep.",
-      },
-    ]);
+    expect(endpointMockState.calls).toHaveLength(1);
+    const headers = new Headers(endpointMockState.calls[0]?.init?.headers);
+    const userAgent = headers.get("User-Agent");
+    expect(userAgent).toMatch(/^openclaw-duckduckgo\//);
+    expect(userAgent).not.toMatch(/Mozilla|Chrome|AppleWebKit/);
   });
 });
