@@ -44,7 +44,7 @@ type ReindexHarness = {
   syncArchiveFiles: (params: SyncArchiveParams) => Promise<unknown>;
   db: DatabaseSync;
   cache: { enabled: boolean; maxEntries?: number };
-  writeMeta: (meta: MemoryIndexMeta) => void;
+  writeMeta: (meta: MemoryIndexMeta) => Promise<void>;
   providerKey: string | null;
   provider: EmbeddingProvider | null;
   dirty: boolean;
@@ -215,6 +215,7 @@ describe("memory manager reindex recovery", () => {
       { source: "sessions", text: "User: published session" },
     ]);
 
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 30_000);
     await memoryManager.sync();
     expect(rows.all()).toEqual([
       { source: "memory", text: "replacement memory" },
@@ -389,8 +390,8 @@ describe("memory manager reindex recovery", () => {
                   input: { kind: "cache-clear-result", publication: workerInput.input },
                 })
               : await open(...args);
-          const run = worker.run.bind(worker);
-          vi.spyOn(worker, "run").mockImplementation(async (...runArgs) => {
+          const execute = worker.execute.bind(worker);
+          vi.spyOn(worker, "execute").mockImplementation(async (...executeArgs) => {
             try {
               if (
                 failurePoint === "publication admission" &&
@@ -400,7 +401,7 @@ describe("memory manager reindex recovery", () => {
                 admissionRefused = true;
                 throw admissionError;
               }
-              const result = await run(...runArgs);
+              const result = await execute(...executeArgs);
               if (cacheRows().some((row) => row.dims === 2)) {
                 cached.resolve();
               }
@@ -994,7 +995,7 @@ describe("memory manager reindex recovery", () => {
           Date.now(),
         );
     }
-    harness.writeMeta({
+    await harness.writeMeta({
       model: "fts-only",
       provider: "none",
       providerKey: harness.providerKey ?? undefined,
