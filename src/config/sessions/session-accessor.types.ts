@@ -15,7 +15,7 @@ import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-en
 import type { SessionEntryCommitContext } from "./session-entry-commit-context.js";
 import type { SessionOwnerAssignment } from "./session-entry-provenance.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
-import type { SessionEntryProjection } from "./session-entry-snapshots.js";
+import type { SessionEntryProjection } from "./session-entry-snapshot-values.js";
 import type { SessionSourceAssertion } from "./session-source-authority.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import type {
@@ -711,22 +711,9 @@ export type ForkSessionEntryFromParentTargetResult =
 export type ForkSessionEntryFromParentTargetParams = {
   agentId?: string;
   commitGuard?: () => void;
-  decisionSkipPatch?: (params: {
-    decision: Extract<SessionParentForkDecision, { status: "skip" }>;
-    entry: SessionEntry;
-    parentEntry: SessionEntry;
-  }) => Partial<SessionEntry> | null;
   fallbackEntry?: SessionEntry;
   parentTarget: SessionLifecycleStoreTarget;
-  patch?: (params: {
-    entry: SessionEntry;
-    parentEntry: SessionEntry;
-    fork: ParentForkedSessionTranscript;
-    decision: Extract<SessionParentForkDecision, { status: "fork" }>;
-  }) => Partial<SessionEntry>;
   sessionTarget: SessionLifecycleStoreTarget;
-  skipForkWhen?: (entry: SessionEntry) => boolean;
-  skipPatch?: (entry: SessionEntry) => Partial<SessionEntry> | null;
   storePath: string;
 };
 
